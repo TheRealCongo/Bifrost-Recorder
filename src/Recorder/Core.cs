@@ -141,7 +141,7 @@ static class FfmpegArgs {
 
   // Record the window into a .mkv (which survives a crash). width and height are the window's size, for the bitrate ceiling.
   public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv) {
-    return "-hide_banner -loglevel warning -y -nostats -progress pipe:1 -stats_period 0.5 " +
+    return "-hide_banner -loglevel warning -y -nostats -progress pipe:1 -stats_period 0.25 " +
            "-filter_complex " + Quote(Source(hwnd) + ",fps=" + Fps + enc.Chain + "[v]") + " -map \"[v]\" " +
            enc.Options(MaxrateKbps(width, height), Quality) + " -fps_mode cfr -flush_packets 1 " + Quote(mkv);
   }

@@ -68,6 +68,7 @@ class MainForm : Form {
     record.Scale = S; record.Text = "Record"; record.Click += delegate { Toggle(); };
     refresh.Scale = S; refresh.Look = PillButton.Kind.Ghost; refresh.Text = "Refresh"; refresh.Click += delegate { if (state == State.Idle) ReloadWindows(); };
     open.Scale = S; open.Look = PillButton.Kind.Ghost; open.Text = "Open recordings folder"; open.Click += delegate { OpenRecordings(); };
+    record.BackColor = Palette.Surface; open.BackColor = Palette.Surface; refresh.BackColor = Palette.Bg;   // each sits on the colour behind it
     Controls.Add(record); Controls.Add(refresh); Controls.Add(open);
 
     tick.Interval = 250;

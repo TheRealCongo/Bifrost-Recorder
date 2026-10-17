@@ -32,6 +32,7 @@ static class RecorderTests {
   [STAThread]
   static int Main(string[] args) {
     SetProcessDPIAware();
+    try { Console.OutputEncoding = Encoding.UTF8; } catch (Exception) { }
     Application.EnableVisualStyles();
     Application.SetCompatibleTextRenderingDefault(false);
     build = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
@@ -208,6 +209,7 @@ static class RecorderTests {
     var still1 = TestWindow.Open(Scene.Static, 800, 450, true, WindowPrefix + ": drawn once (800 x 450)");
     var still2 = TestWindow.Open(Scene.Static, 640, 360, true, WindowPrefix + ": drawn once (640 x 360)");
     uint own = (uint)Process.GetCurrentProcess().Id;
+    Native.ExcludePid = 0;   // the test windows are this process's own
     var form = OpenRecorder(delegate(WindowInfo w) { return w.ProcessId == own && w.Title.StartsWith(WindowPrefix); }, Path.Combine(outDir, "Recordings"));
     watch.Quiet(form.Handle);
     try {
@@ -278,8 +280,8 @@ static class RecorderTests {
     Check("ffprobe reads the .mp4 clean", p.Ok, p.Error);
     Check("video is hevc, Main profile, 8-bit 4:2:0", p.Codec == "hevc" && p.Profile == "Main" && p.PixFmt == "yuv420p", p.Codec + " " + p.Profile + " " + p.PixFmt);
     Check("r_frame_rate is 60/1", p.FrameRate == "60/1", p.FrameRate + " (avg " + p.AvgFrameRate + ")");
-    Check("duration is about 20 s", Math.Abs(p.Duration - 20.0) < 1.5, p.Duration.ToString("0.000"));
-    Check("frame count is about 1200", Math.Abs(p.Frames - 1200) <= 24, p.Frames.ToString());
+    Check("duration is about 20 s", Math.Abs(p.Duration - 20.0) < 1.0, p.Duration.ToString("0.000"));
+    Check("frame count is about 1200 (within 5%: the clock starts at the first picture, which is reported up to a quarter second late)", Math.Abs(p.Frames - 1200) <= 60, p.Frames.ToString());
     Check("frame count matches duration at 60 fps (within 2 frames)", Math.Abs(p.Frames - p.Duration * 60) <= 2, p.Frames + " frames, " + p.Duration.ToString("0.000") + " s = " + (p.Duration * 60).ToString("0.0"));
     Check("picture is the window's own area: 1280 x 720", p.Width == 1280 && p.Height == 720, p.Width + "x" + p.Height);
     Check("tagged tv range, BT.709 primaries and transfer, smpte170m matrix (what NVENC makes)", p.Range == "tv" && p.Primaries == "bt709" && p.Transfer == "bt709" && p.Space == "smpte170m", p.Range + " " + p.Primaries + " " + p.Transfer + " " + p.Space);
@@ -374,6 +376,7 @@ static class RecorderTests {
     Check("software: recording started", started, err);
     if (started) {
       Thread.Sleep(6000);
+      long cpu4 = (long)r4.Cpu.TotalMilliseconds;
       var res = r4.Stop();
       Check("software: saved as a good .mp4", res.Ok && !res.Forced, res.Message);
       if (res.Ok) {
@@ -382,7 +385,7 @@ static class RecorderTests {
         string png = Path.Combine(outDir, "software.png"), so, se;
         Proc.Run(Ffmpeg.Exe, "-hide_banner -loglevel error -nostdin -y -ss 3 -i " + FfmpegArgs.Quote(res.Mp4) + " -frames:v 1 " + FfmpegArgs.Quote(png), 30000, out so, out se);
         if (File.Exists(png)) CheckColours(png, 1280, 720, "the software H.264");
-        Note("software encoder: " + (res.Bytes / 1048576.0).ToString("0.00") + " MB for " + res.Seconds.ToString("0.0") + " s; ffmpeg CPU " + (long)r4.Cpu.TotalMilliseconds + " ms");
+        Note("software encoder: " + (res.Bytes / 1048576.0).ToString("0.00") + " MB for " + res.Seconds.ToString("0.0") + " s; ffmpeg CPU " + cpu4 + " ms");
       }
     }
     w4.CloseWindow();
@@ -390,7 +393,7 @@ static class RecorderTests {
     // a window that doesn't exist, and a recording folder that can't be made: clear failures, nothing left behind
     var r5 = new Recording(enc, new IntPtr(0x7FFFF), 640, 360, folder, "gone");
     started = r5.Start(out err, 3000);
-    Check("a window that doesn't exist fails with a message and leaves nothing", !started && !string.IsNullOrEmpty(err) && !File.Exists(Path.Combine(folder, "gone.mkv")), err);
+    Check("a window that doesn't exist fails with a clear message and leaves nothing", !started && err == "That window has gone." && !File.Exists(Path.Combine(folder, "gone.mkv")), err);
     Check("no .mkv is left anywhere in the edge-case folder", Directory.GetFiles(folder, "*.mkv").Length == 0, string.Join(",", Directory.GetFiles(folder, "*.mkv")));
   }
 
@@ -529,6 +532,7 @@ static class RecorderTests {
     Console.WriteLine("RESULT size=" + mb.ToString("0.00") + " MB  =>  " + (mb / p.Duration * 60).ToString("0.0") + " MB per minute  (" + (res.Bytes * 8 / p.Duration / 1e6).ToString("0.0") + " Mb/s average; ceiling " + FfmpegArgs.MaxrateKbps(w, h) / 1000.0 + " Mb/s)");
     Console.WriteLine("RESULT while recording: " + Smi.Summary(during));
     Console.WriteLine("RESULT ffmpeg CPU " + cpu.TotalSeconds.ToString("0.00") + " s over " + wall.ToString("0.0") + " s = " + (100 * cpu.TotalSeconds / wall).ToString("0.0") + "% of one core, " + (100 * cpu.TotalSeconds / wall / Environment.ProcessorCount).ToString("0.00") + "% of the " + Environment.ProcessorCount + "-thread CPU");
+    Console.WriteLine("RESULT test window cost per frame: render " + (win.RenderTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms, present " + (win.PresentTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms");
     Console.WriteLine("RESULT test window drew " + drawn + " frames in " + wall.ToString("0.0") + " s (" + (drawn / wall).ToString("0.0") + "/s) with " + late + " late (>8 ms) while being recorded");
     string so, se;
     string png = Path.Combine(build, "bench", name + ".png");

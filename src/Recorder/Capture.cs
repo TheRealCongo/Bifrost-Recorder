@@ -141,6 +141,7 @@ class Recording {
   // Starts ffmpeg and waits for the first picture. A window that isn't redrawing sends none, so it's asked to repaint.
   public bool Start(out string error, int firstFrameTimeoutMs) {
     error = null;
+    if (!Native.IsWindow(Hwnd)) { error = "That window has gone."; return false; }
     try { Directory.CreateDirectory(Path.GetDirectoryName(MkvPath)); }
     catch (Exception ex) { error = "Can't make the recordings folder: " + ex.Message; return false; }
     Command = FfmpegArgs.Record(Encoder, Hwnd.ToInt64(), width, height, MkvPath);

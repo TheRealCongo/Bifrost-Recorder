@@ -36,6 +36,7 @@ class TestWindow : Form {
   Thread loop;
   volatile bool stopping;
   public long Drawn, Late;               // frames drawn, and frames that started more than 8 ms after they were due
+  public long RenderTicks, PresentTicks; // Stopwatch ticks spent making frames and putting them in the window
   public volatile int LastCounter;       // the counter drawn last
   public volatile bool Frozen;           // set: the loop stops redrawing (a game that has stopped producing frames)
 
@@ -121,7 +122,15 @@ class TestWindow : Form {
         while ((now = sw.Elapsed.TotalMilliseconds) < due - 1.5) Thread.Sleep(1);
         while (sw.Elapsed.TotalMilliseconds < due) Thread.SpinWait(40);
         if (sw.Elapsed.TotalMilliseconds - due > 8) Interlocked.Increment(ref Late);
-        if (!Frozen) { Render(n); Present(); Interlocked.Increment(ref Drawn); }
+        if (!Frozen) {
+          long t0 = Stopwatch.GetTimestamp();
+          Render(n);
+          long t1 = Stopwatch.GetTimestamp();
+          Present();
+          long t2 = Stopwatch.GetTimestamp();
+          Interlocked.Add(ref RenderTicks, t1 - t0); Interlocked.Add(ref PresentTicks, t2 - t1);
+          Interlocked.Increment(ref Drawn);
+        }
         n++;
       }
     } finally { timeEndPeriod(1); }

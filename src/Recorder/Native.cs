@@ -56,9 +56,12 @@ static class Native {
     return true;
   }
 
+  // Windows of this process are never offered. The tests, whose own windows are what they record, set this to 0.
+  public static uint ExcludePid = (uint)Process.GetCurrentProcess().Id;
+
   public static List<WindowInfo> ListWindows() {
     var list = new List<WindowInfo>();
-    uint own = (uint)Process.GetCurrentProcess().Id;
+    uint own = ExcludePid;
     EnumWindows(delegate(IntPtr h, IntPtr lp) {
       try {
         if (!IsWindowVisible(h)) return true;

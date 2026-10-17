@@ -79,7 +79,7 @@ class PillButton : Control {
   protected override void OnPaint(PaintEventArgs e) {
     var g = e.Graphics;
     g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-    g.Clear(Parent != null ? Parent.BackColor : Palette.Bg);
+    g.Clear(BackColor);
     var r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
     Color fill, line, text;
     if (!Enabled) { fill = Look == Kind.Ghost ? Color.Transparent : Palette.Track; line = Palette.Edge; text = Palette.Dim; }
