@@ -33,16 +33,29 @@ static class Settings {
 }
 
 static class FileNames {
-  // The program's name for the file name: its exe without ".exe", with anything a file name can't hold replaced.
-  public static string ProgramName(string exePath, string windowTitle) {
-    string name = string.IsNullOrEmpty(exePath) ? "" : Path.GetFileNameWithoutExtension(exePath);
-    if (name.Trim().Length == 0) name = windowTitle ?? "";
+  // The program's friendly name for the file name, from the exe's version info (its FileDescription, e.g. "Arma Reforger").
+  public static string Friendly(string exePath, string windowTitle) {
+    string description = null;
+    try { if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath)) description = System.Diagnostics.FileVersionInfo.GetVersionInfo(exePath).FileDescription; } catch (Exception) { }
+    return ProgramName(exePath, windowTitle, description);
+  }
+
+  static readonly string[] Reserved = { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
+
+  // The name for the file: the FileDescription if the exe has one, else the window's title, else the exe's name without ".exe", else
+  // "Recording"; anything a Windows file name can't hold replaced, no trailing dots or spaces, device names (CON, NUL...) avoided.
+  public static string ProgramName(string exePath, string windowTitle, string fileDescription) {
+    string name = (fileDescription ?? "").Trim();
+    if (name.Length == 0) name = (windowTitle ?? "").Trim();
+    if (name.Length == 0) name = string.IsNullOrEmpty(exePath) ? "" : Path.GetFileNameWithoutExtension(exePath);
     var sb = new StringBuilder();
     var bad = Path.GetInvalidFileNameChars();
     foreach (char c in name) sb.Append(Array.IndexOf(bad, c) >= 0 || c < 32 ? '_' : c);
-    string s = sb.ToString().Trim().TrimEnd('.');
+    string s = sb.ToString().Trim().TrimEnd('.', ' ');
     if (s.Length > 60) s = s.Substring(0, 60).TrimEnd();
-    return s.Length == 0 ? "Recording" : s;
+    if (s.Length == 0) return "Recording";
+    if (Array.IndexOf(Reserved, s.ToUpperInvariant()) >= 0) s += "_";
+    return s;
   }
 
   // "<program> yyyy-MM-dd HH-mm-ss" without an extension.

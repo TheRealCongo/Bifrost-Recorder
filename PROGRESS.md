@@ -41,7 +41,7 @@ PRIMARY RISKS
 - Window capture delivers nothing for windows that don't redraw (found, handled). scale_d3d11 broken in this build (found, avoided).
 - Colour matrix of NVENC's internal RGB conversion (measured, tagged truthfully).
 REQUEST INTERPRETATION
-- "Program name" in the file name = the exe name without .exe.
+- "Program name" in the file name = the exe's friendly name (version-info FileDescription, e.g. "Arma Reforger"), else the window title, else the exe name, sanitized for Windows (orchestrator's call, 19:4x).
 ```
 
 ## Done, with evidence
@@ -79,8 +79,11 @@ Evidence level key: **VERIFIED** = run here and checked; **ASSUMED** = not run h
   therefore asks the window to repaint (`RedrawWindow`, invalidate only, no waiting) when no picture has come for a second, at start
   and at stop. Otherwise a static window never starts and a stalled one can't be stopped. Games redraw constantly, so this only
   matters for quiet windows.
-- A window that isn't on a monitor (off-screen, or minimized) sends nothing either, so the test windows sit on a monitor but are
-  layered at alpha 1/255 (invisible) and click-through.
+- A window that isn't on a monitor (off-screen at -30000,-30000: 0 frames in 5 s; or minimized) sends nothing either, and one with only 8 px on
+  a monitor sent a blank picture. So the test windows open on the **primary** monitor (the NVIDIA one, the path a game takes) at the bottom of the window order, layered at alpha
+  1/255 (invisible), click-through, no-activate and never topmost; `BIFROST_TEST_SCREEN=secondary` puts them inside the other monitor instead (fallback,
+  not yet needed or tried). The Recorder's own window in the tests is off every monitor (PrintWindow pictures it there fine). A watcher checks every 50 ms that
+  no test window is topmost, visible (alpha above 2) or in the foreground.
 - Muxing `-flush_packets 1`: without it ffmpeg's buffering left a 0-byte .mkv when it was killed.
 - gfxcapture with `display_border=false` captures the window's client area (no title bar or frame): 1279x719 client gave 1278x718 with `width=-2:height=-2`.
 
@@ -94,7 +97,20 @@ Evidence level key: **VERIFIED** = run here and checked; **ASSUMED** = not run h
 
 ## Open issues / not done
 
+- **Waiting for an all-clear (Congo's live test)**: one full `build\RecorderTests.exe` run with the secondary-monitor placement (compiled, not yet run) and
+  then the remaining measurements. Source HEAD c270ce3 is the last state whose full suite passed (108 of 108).
+- The test window's own drawing was the bottleneck in the first Hard-scene figure: its frame took 3.8 ms to draw and 43.8 ms to put in the window
+  (GDI+ converting a non-premultiplied bitmap), so it drew 21.8 fps. Fixed (premultiplied bitmap: 1.4 ms); the bench now also prints what the
+  window draws when not being recorded.
 - Measurements (MB per minute, GPU/encoder load, ffmpeg CPU) on the harder scene: after the live-test build.
 - AMF and QSV never run.
 - A `.mkv` left by a crash is not recovered automatically on the next start (it stays playable in the folder).
 - Exclusive-fullscreen games can't be captured by window capture (borderless is fine).
+
+## Test safety (added after Arma hit DXGI_ERROR_DEVICE_HUNG during test runs, 2026-10-17)
+
+- `RecorderTests.exe` (suite, `--bench`, `--hold`) refuses to start while a game is running (any process named ArmaReforger*, arma3*, DayZ*; prints why, exit
+  code 2) and ends itself (exit 3, which closes the Job Object and so ends ffmpeg) if one starts mid-run. A named mutex (`Global\BifrostRecorderTestRun`)
+  stops two runs overlapping. `--guard-check` only lists processes; `--guard-test` runs the whole guard and nothing else (VERIFIED refusing with Arma running:
+  exit code 2). The two-run mutex refusal is written but not exercised yet.
+- No GPU run has been made since the guard was added; the full suite with the new window placement and file names is compiled but not yet run.

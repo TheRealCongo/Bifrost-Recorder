@@ -39,11 +39,14 @@ static class RecorderTests {
     project = Path.GetFullPath(Path.Combine(build, ".."));
     outDir = Path.Combine(build, "test-output");
     shotsDir = Path.Combine(project, "docs", "screenshots", "m1");
-    TestWindow.Place = new Point(100, 100);   // see the header: on a monitor, but 1/255 visible and click-through
     TestWindow.LayerAlpha = 1;
 
-    if (args.Length > 0 && args[0] == "--job-child") return JobChild();
+    if (args.Length > 0 && args[0] == "--job-child") return JobChild();   // started by a run that already passed the guard; CPU only
+    if (args.Length > 0 && args[0] == "--guard-check") { Console.WriteLine("game running: " + (RunningGame() ?? "none")); return 0; }   // reads the process list only; nothing else
+    if (args.Length > 0 && args[0] == "--guard-test") { bool go = Guard(); Console.WriteLine("guard says: " + (go ? "go" : "refuse")); return go ? 0 : 2; }   // the guard and nothing after it
+    if (!Guard()) return 2;
     if (args.Length > 0 && args[0] == "--bench") return Bench(args);
+    if (args.Length > 0 && args[0] == "--hold") return Hold(args);
 
     if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
     Directory.CreateDirectory(outDir);
@@ -55,6 +58,11 @@ static class RecorderTests {
       EndToEnd(watch);
     } catch (Exception ex) { Check("the run finished", false, ex.ToString()); }
     var violations = watch.Stop();
+    lock (TestWindow.Placed) foreach (var p in TestWindow.Placed) Note("placed: " + p);
+    string wantScreen = TestWindow.OnSecondary ? "(secondary)" : "(primary)";
+    bool allPlaced = true;
+    lock (TestWindow.Placed) foreach (var p in TestWindow.Placed) if (!p.Contains(wantScreen)) allPlaced = false;
+    Check("every test window opened fully inside the " + (TestWindow.OnSecondary ? "secondary" : "primary") + " monitor, as asked", TestWindow.Placed.Count > 0 && allPlaced, TestWindow.Placed.Count + " windows");
     Check("no window of a child process was ever visible, and the Recorder's own window never touched a monitor", violations.Count == 0 && watch.Looks > 20,
       watch.Looks + " looks; " + string.Join("; ", violations.ToArray()));
     int alive = 0;
@@ -64,6 +72,43 @@ static class RecorderTests {
     Console.WriteLine();
     Console.WriteLine(passed + " passed, " + failed + " failed");
     return failed == 0 ? 0 : 1;
+  }
+
+  // ------------------------------------------------------------------------------------------------ the guard
+  // Everything here uses the GPU (window capture and NVENC), so none of it runs next to a game, and two runs never overlap.
+  // Process names that start with one of these count as a game.
+  static readonly string[] GamePrefixes = { "ArmaReforger", "arma3", "DayZ" };   // ArmaReforgerSteam, ...SteamDiag, ...WorkbenchSteamDiag
+  static Mutex runLock;   // held for the whole run
+
+  static string RunningGame() {
+    foreach (var p in Process.GetProcesses()) {
+      try {
+        string n = p.ProcessName;
+        foreach (string g in GamePrefixes) if (n.StartsWith(g, StringComparison.OrdinalIgnoreCase)) return n + ".exe (pid " + p.Id + ")";
+      } catch (Exception) { } finally { p.Dispose(); }
+    }
+    return null;
+  }
+
+  static bool Guard() {
+    string game = RunningGame();
+    if (game != null) {
+      Console.Error.WriteLine("REFUSED: " + game + " is running. The tests, --bench and --hold capture windows and encode with the GPU, and never run next to a game.");
+      return false;
+    }
+    bool mine;
+    runLock = new Mutex(true, @"GlobalBifrostRecorderTestRun", out mine);
+    if (!mine) { Console.Error.WriteLine("REFUSED: another RecorderTests run (tests, --bench or --hold) is already going."); return false; }
+    // a game that starts during the run ends it: exiting closes the job, which ends ffmpeg with it
+    var watch = new Thread(delegate() {
+      while (true) {
+        Thread.Sleep(1000);
+        string g = RunningGame();
+        if (g != null) { Console.Error.WriteLine("ABORTED: " + g + " started during the run."); Environment.Exit(3); }
+      }
+    });
+    watch.IsBackground = true; watch.Name = "game guard"; watch.Start();
+    return true;
   }
 
   static string Counts() {
@@ -94,10 +139,18 @@ static class RecorderTests {
     // file names
     var when = new DateTime(2026, 10, 17, 18, 5, 9);
     Check("file name is <program> yyyy-MM-dd HH-mm-ss", FileNames.BaseName("ArmaReforgerSteam", when) == "ArmaReforgerSteam 2026-10-17 18-05-09");
-    Check("program name is the exe without .exe", FileNames.ProgramName(@"C:\Games\ArmaReforgerSteam.exe", "Arma Reforger") == "ArmaReforgerSteam");
-    Check("no exe: the window title is used, cleaned of characters a file can't hold", FileNames.ProgramName(null, "a/b:c*d?") == "a_b_c_d_");
-    Check("nothing to go on: Recording", FileNames.ProgramName("", "  ") == "Recording");
-    Check("a long name is cut", FileNames.ProgramName(@"C:\x\" + new string('A', 200) + ".exe", "").Length == 60);
+    const string exe = @"C:\Games\ArmaReforgerSteam.exe";
+    Check("name: the exe's FileDescription comes first", FileNames.ProgramName(exe, "Arma Reforger - 1.2 - window", "Arma Reforger") == "Arma Reforger");
+    Check("name: no FileDescription: the window title", FileNames.ProgramName(exe, "Arma Reforger", null) == "Arma Reforger" && FileNames.ProgramName(exe, "Arma", "  ") == "Arma");
+    Check("name: no description and no title: the exe name without .exe", FileNames.ProgramName(exe, "", " ") == "ArmaReforgerSteam" && FileNames.ProgramName(exe, null, null) == "ArmaReforgerSteam");
+    Check("name: characters a file name can't hold are replaced", FileNames.ProgramName(null, "a/b:c*d?", "") == "a_b_c_d_" && FileNames.ProgramName(exe, "", "Foo \"Bar\" <1>|2") == "Foo _Bar_ _1__2");
+    Check("name: trailing dots and spaces are dropped", FileNames.ProgramName(exe, "", "Foo. . ") == "Foo");
+    Check("name: nothing to go on gives Recording", FileNames.ProgramName("", "  ", null) == "Recording" && FileNames.ProgramName(null, null, "...") == "Recording");
+    Check("name: Windows device names (CON, nul, COM1) get an underscore", FileNames.ProgramName(null, "", "CON") == "CON_" && FileNames.ProgramName(null, "", "nul") == "nul_" && FileNames.ProgramName(null, "", "COM1") == "COM1_" && FileNames.ProgramName(null, "", "Console") == "Console");
+    Check("name: a long one is cut to 60", FileNames.ProgramName(exe, "", new string('A', 200)).Length == 60);
+    string notepad = Path.Combine(Environment.SystemDirectory, "notepad.exe");
+    Check("name: read from a real exe's version info (Notepad)", FileNames.Friendly(notepad, "ignored") == "Notepad", FileNames.Friendly(notepad, "ignored"));
+    Check("name: an exe that isn't there falls back to the title", FileNames.Friendly(@"C:\nowhere\x.exe", "A Title") == "A Title");
     string names = Path.Combine(tmp, "names"); Directory.CreateDirectory(names);
     Check("a free name stays as it is", FileNames.Unique(names, "Game 1") == "Game 1");
     File.WriteAllText(Path.Combine(names, "Game 1.mp4"), "x");
@@ -181,6 +234,15 @@ static class RecorderTests {
     Check("job object: the parent was killed outright and its ffmpeg ended with it", p.HasExited && gone, "ffmpeg " + pid + " gone=" + gone);
   }
 
+  // --hold <Scene> <width> <height> <seconds>: opens a test window and prints its handle, for trying ffmpeg settings by hand.
+  static int Hold(string[] a) {
+    var win = TestWindow.Open((Scene)Enum.Parse(typeof(Scene), a[1]), int.Parse(a[2]), int.Parse(a[3]), false, WindowPrefix + ": held");
+    Console.WriteLine("HWND=" + win.Handle.ToInt64()); Console.Out.Flush();
+    Thread.Sleep(int.Parse(a[4]) * 1000);
+    win.CloseWindow();
+    return 0;
+  }
+
   static int JobChild() {
     var p = Proc.Start(Ffmpeg.Exe, "-hide_banner -loglevel error -re -f lavfi -i testsrc=size=320x240:rate=30 -t 600 -f null -", true);
     Console.WriteLine("PID=" + p.Id); Console.Out.Flush();
@@ -262,8 +324,20 @@ static class RecorderTests {
       var closed = form.LastResult;
       Check("the closed window's recording is a good .mp4 of about 4 seconds, not forced", closed != null && closed.Ok && !closed.Forced && closed.Seconds > 2.5 && closed.Seconds < 6, closed == null ? "null" : closed.Message + " " + closed.Seconds.ToString("0.0"));
       Check("closing test: no .mkv left", Directory.GetFiles(Path.Combine(outDir, "Recordings"), "*.mkv").Length == 0);
-    } finally {
+
+      // the Recorder itself closed under a recording: it finishes the file first, then closes
+      Console.WriteLine("-- the Recorder's own window is closed while recording");
+      var keep = TestWindow.Open(Scene.Simple, 640, 360, true, WindowPrefix + ": recorder closes");
+      Invoke(form, delegate { form.ReloadWindows(); form.SelectHwnd(keep.Handle); });
+      form.LastResult = null;
+      Invoke(form, delegate { form.PressRecord(); });
+      Check("close test: recording started", WaitFor(delegate { return form.Mode == MainForm.State.Recording; }, 30000, "recording"), form.StatusText);
+      Thread.Sleep(3000);
       Invoke(form, delegate { form.Close(); });
+      Check("closing the Recorder while recording saves the file first and then closes", WaitFor(delegate { return form.IsDisposed; }, 40000, "closed") && form.LastResult != null && form.LastResult.Ok && form.LastResult.Seconds > 2, form.LastResult == null ? "no result" : form.LastResult.Message);
+      keep.CloseWindow();
+    } finally {
+      try { if (!form.IsDisposed) Invoke(form, delegate { form.Close(); }); } catch (Exception) { }
       moving.CloseWindow(); still1.CloseWindow(); still2.CloseWindow();
     }
 
@@ -273,7 +347,9 @@ static class RecorderTests {
   static void CheckMainRecording(RecordingResult res, double elapsed, MainForm form) {
     Check("recording saved: " + (res == null ? "?" : res.Message), res != null && res.Ok && res.Mp4 != null && File.Exists(res.Mp4), res == null ? null : res.Message);
     if (res == null || !res.Ok) return;
-    Check("the file is named <program> yyyy-MM-dd HH-mm-ss.mp4", System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(res.Mp4), @"^RecorderTests \d{4}-\d\d-\d\d \d\d-\d\d-\d\d\.mp4$"), Path.GetFileName(res.Mp4));
+    string friendly = FileNames.Friendly(Application.ExecutablePath, WindowPrefix + ": moving bar and frame counter");
+    Check("the file is named <friendly name> yyyy-MM-dd HH-mm-ss.mp4 (the test exe has no FileDescription, so it's the window's title)",
+      System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(res.Mp4), "^" + System.Text.RegularExpressions.Regex.Escape(friendly) + @" \d{4}-\d\d-\d\d \d\d-\d\d-\d\d\.mp4$"), Path.GetFileName(res.Mp4));
     Check("it went to the Recordings folder", Path.GetDirectoryName(res.Mp4) == Path.Combine(outDir, "Recordings"));
     Check("the .mkv is gone", !File.Exists(Path.ChangeExtension(res.Mp4, ".mkv")));
     var p = ProbeResult.Run(res.Mp4, true);
@@ -443,6 +519,9 @@ static class RecorderTests {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
+    [DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
 
     readonly List<string> violations = new List<string>();
     readonly List<IntPtr> quiet = new List<IntPtr>();
@@ -467,6 +546,20 @@ static class RecorderTests {
           if (!Native.IsWindow(h) || !Native.GetWindowRect(h, out r)) continue;
           foreach (var s in Screen.AllScreens) if (s.Bounds.IntersectsWith(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top))) Add("the Recorder's window was on a monitor");
         }
+        // the tests' own windows must stay invisible (alpha 1/255), click-through, no-activate and never topmost, and out of the foreground;
+        // with the secondary-monitor fallback they must also stay off the primary monitor
+        lock (TestWindow.Handles) foreach (var h in TestWindow.Handles) {
+          Native.RECT r;
+          if (!Native.IsWindow(h) || !Native.GetWindowRect(h, out r)) continue;
+          int ex = GetWindowLong(h, -20);
+          if ((ex & 0x8) != 0) Add("a test window was topmost");
+          if ((ex & (0x80000 | 0x20 | 0x08000000)) != (0x80000 | 0x20 | 0x08000000)) Add("a test window wasn't layered, click-through and no-activate");
+          uint key, flags; byte alpha;
+          if (GetLayeredWindowAttributes(h, out key, out alpha, out flags) && (flags & 2) != 0 && alpha > 2) Add("a test window was visible (alpha " + alpha + ")");
+          if (TestWindow.OnSecondary) foreach (var s in Screen.AllScreens) if (s.Primary && s.Bounds.IntersectsWith(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top))) Add("a test window was on the main screen");
+        }
+        uint fpid; GetWindowThreadProcessId(GetForegroundWindow(), out fpid);
+        if (fpid == (uint)Process.GetCurrentProcess().Id) Add("a window of the tests took the focus");
         Looks++;
         Thread.Sleep(50);
       }
@@ -505,9 +598,14 @@ static class RecorderTests {
     int w = int.Parse(a[2]), h = int.Parse(a[3]), secs = int.Parse(a[4]);
     Directory.CreateDirectory(Path.Combine(build, "bench"));
     var win = TestWindow.Open(scene, w, h, false, WindowPrefix + ": bench " + scene);
+    lock (TestWindow.Placed) foreach (var placed in TestWindow.Placed) Console.WriteLine("PLACED " + placed);
     var smi = new Smi(); smi.Start();
+    long bd0 = win.Drawn, bl0 = win.Late;
+    var bsw = Stopwatch.StartNew();
     Thread.Sleep(6000);
+    double bwall = bsw.Elapsed.TotalSeconds;
     Console.WriteLine("BASELINE (window drawing, not recording): " + Smi.Summary(smi.Take()));
+    Console.WriteLine("BASELINE the test window drew " + (win.Drawn - bd0) + " frames in " + bwall.ToString("0.0") + " s (" + ((win.Drawn - bd0) / bwall).ToString("0.0") + "/s), " + (win.Late - bl0) + " late (>8 ms), render " + (win.RenderTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms, present " + (win.PresentTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms");
     var enc = EncoderChoice.Detect(Ffmpeg.Exe);
     string name = "bench-" + scene + "-" + w + "x" + h;
     var rec = new Recording(enc, win.Handle, w, h, Path.Combine(build, "bench"), name);

@@ -5,6 +5,7 @@
 //   Noise   a full frame of new random pixels every frame: the worst case any encoder can be given
 //   Static  drawn once and never again (a window that doesn't redraw)
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -17,6 +18,7 @@ enum Scene { Simple, Hard, Noise, Static }
 
 class TestWindow : Form {
   [DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint ms);
   [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint ms);
 
@@ -26,8 +28,21 @@ class TestWindow : Form {
     Color.FromArgb(128, 128, 128), Color.FromArgb(0, 0, 0), Color.FromArgb(255, 255, 0), Color.FromArgb(0, 255, 255) };
   public const int SwatchWidth = 80, SwatchHeight = 80;
 
-  public static Point Place = new Point(-30000, -30000);   // where the window opens: off every monitor by default
+  // Where windows open. By default on the primary monitor (the one on the NVIDIA GPU, the path a game's window takes), at the bottom of the
+  // window order, layered at alpha 1/255 (invisible), click-through and never taking the focus. BIFROST_TEST_SCREEN=secondary puts them fully
+  // inside the first other monitor instead (the fallback if the invisible bottom window can't be captured). Off every monitor sends the
+  // capture nothing (measured).
+  public static readonly bool OnSecondary = Environment.GetEnvironmentVariable("BIFROST_TEST_SCREEN") == "secondary" && HasSecondary();
+  public static Point Place = OnSecondary ? SecondaryOrigin() : new Point(Screen.PrimaryScreen.Bounds.X + 100, Screen.PrimaryScreen.Bounds.Y + 100);
+  public static readonly List<IntPtr> Handles = new List<IntPtr>();   // every test window opened, for the watcher
+  public static readonly List<string> Placed = new List<string>();    // where each one ended up, for the log
+  static Point SecondaryOrigin() {
+    foreach (var s in Screen.AllScreens) if (!s.Primary) return s.Bounds.Location;
+    return Screen.PrimaryScreen.Bounds.Location;
+  }
+  public static bool HasSecondary() { foreach (var s in Screen.AllScreens) if (!s.Primary) return true; return false; }
   public static int LayerAlpha = 255;                       // below 255 the window is layered with this alpha
+  const PixelFormat BackFormat = PixelFormat.Format32bppPArgb;   // the format GDI+ puts into a window fastest
   readonly Scene scene;
   readonly int cw, ch;
   readonly object gate = new object();
@@ -50,7 +65,7 @@ class TestWindow : Form {
     ClientSize = new Size(w, h);
     BackColor = Color.Black;
     SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque, true);
-    back = new Bitmap(w, h, PixelFormat.Format32bppRgb);
+    back = new Bitmap(w, h, BackFormat);
   }
 
   public int PixelWidth { get { return cw; } }
@@ -71,6 +86,11 @@ class TestWindow : Form {
     if (!created.WaitOne(15000)) throw new Exception("the test window didn't open");
     if (!win.shown.WaitOne(15000)) throw new Exception("the test window didn't show");
     Thread.Sleep(300);   // let the first frames reach the compositor
+    lock (Handles) Handles.Add(win.Handle);
+    Native.RECT r; Native.GetWindowRect(win.Handle, out r);
+    string where = "off every monitor";
+    foreach (var s in Screen.AllScreens) if (s.Bounds.Contains(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top))) where = "inside " + s.DeviceName + (s.Primary ? " (primary)" : " (secondary)");
+    lock (Placed) Placed.Add(title + ": " + r.Left + "," + r.Top + " " + (r.Right - r.Left) + "x" + (r.Bottom - r.Top) + " " + where);
     return win;
   }
 
@@ -96,6 +116,7 @@ class TestWindow : Form {
     if (scene == Scene.Static) { Render(0); Present(); }
     else { loop = new Thread(Loop) { IsBackground = true, Priority = ThreadPriority.AboveNormal, Name = "test window frames" }; loop.Start(); }
     if (LayerAlpha < 255) SetLayeredWindowAttributes(Handle, 0, (byte)LayerAlpha, 2);
+    SetWindowPos(Handle, (IntPtr)1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);   // HWND_BOTTOM; no size, no move, no activate: never topmost
     shown.Set();
   }
 
@@ -103,6 +124,8 @@ class TestWindow : Form {
 
   protected override void OnFormClosed(FormClosedEventArgs e) { stopping = true; base.OnFormClosed(e); }
 
+  // (Putting frames in the window with SetDIBitsToDevice was tried: it was fast, but the capture then got about 10 frames a second
+  // from this near-invisible layered window. GDI+ drawing the bitmap into the window's DC reaches the compositor every frame.)
   void Present() {
     if (!IsHandleCreated) return;
     try {
@@ -212,7 +235,7 @@ class TestWindow : Form {
       Array.Copy(texPixels, row + ox, framePixels, dst, first);
       if (first < cw) Array.Copy(texPixels, row, framePixels, dst + first, cw - first);
     }
-    var bd = back.LockBits(new Rectangle(0, 0, cw, ch), ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
+    var bd = back.LockBits(new Rectangle(0, 0, cw, ch), ImageLockMode.WriteOnly, BackFormat);
     try { Marshal.Copy(framePixels, 0, bd.Scan0, framePixels.Length); } finally { back.UnlockBits(bd); }
     using (var g = Graphics.FromImage(back)) {
       g.SmoothingMode = SmoothingMode.None;
@@ -238,7 +261,7 @@ class TestWindow : Form {
       framePixels[i] = (int)(s | 0xFF000000u);
     }
     rnd = s;
-    var bd = back.LockBits(new Rectangle(0, 0, cw, ch), ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
+    var bd = back.LockBits(new Rectangle(0, 0, cw, ch), ImageLockMode.WriteOnly, BackFormat);
     try { Marshal.Copy(framePixels, 0, bd.Scan0, framePixels.Length); } finally { back.UnlockBits(bd); }
     LastCounter++;
   }

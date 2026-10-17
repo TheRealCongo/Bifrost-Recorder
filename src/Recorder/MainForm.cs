@@ -273,7 +273,7 @@ class MainForm : Form {
     string folder = recordingsFolder;
     var t = new Thread(delegate() {
       Size sz = Native.FrameSize(w.Handle);
-      string baseName = FileNames.Unique(folder, FileNames.BaseName(FileNames.ProgramName(w.ExePath, w.Title), DateTime.Now));
+      string baseName = FileNames.Unique(folder, FileNames.BaseName(FileNames.Friendly(w.ExePath, w.Title), DateTime.Now));
       var rec = new Recording(enc, w.Handle, sz.Width > 0 ? sz.Width : w.Width, sz.Height > 0 ? sz.Height : w.Height, folder, baseName);
       string error;
       bool ok = rec.Start(out error, 15000);
