@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Bifrost Recorder: records one window (a game or a program) with the ffmpeg in the bin folder beside it.
 // BifrostRecorder.settings.json beside the program (written by Bifrost Suite) holds DataFolder; recordings go to
 // <DataFolder>\Recordings, or to %USERPROFILE%\Videos\Bifrost Recorder without it.

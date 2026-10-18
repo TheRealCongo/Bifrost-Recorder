@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // The Recorder's look: the Bifrost console style (Bahnschrift and Cascadia Mono, which Windows ships), drawn from the theme tokens and the
 // accent chosen in Settings (Theme.cs, the same colours as Bifrost Scribe). Palette holds the colours in use; Palette.Apply changes them,
 // and every window repaints from it. The app icon is not themed. C# 5 for Windows' own compiler.

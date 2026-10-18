@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Recording a window with the bundled ffmpeg: finding the encoder that works, running the capture, stopping it cleanly, and
 // turning the .mkv into the .mp4. C# 5 for Windows' own compiler.
 using System;

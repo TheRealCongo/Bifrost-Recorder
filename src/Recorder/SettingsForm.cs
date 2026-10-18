@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // The Settings window. Two pages: RECORDING, the five choices a recording is made with, in plain words with a short hint under each (a change
 // applies to the next recording and is saved at once; greyed while a recording runs), and APPEARANCE, the theme presets and the accent, as in
 // the other Bifrost apps (applied live). The caller's `changed` saves the prefs file and refreshes the header chip and the colours.

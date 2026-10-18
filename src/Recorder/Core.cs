@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // The Recorder's decisions, with no window and no process in them, so the tests can check every one: where recordings go, what
 // they're called, which encoder is used and the exact ffmpeg arguments. C# 5 for Windows' own compiler.
 using System;

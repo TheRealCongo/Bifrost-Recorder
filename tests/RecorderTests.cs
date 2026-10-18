@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Tests for Bifrost Recorder: run build\RecorderTests.exe after build.ps1 (or build.ps1 -Test).
 //   no arguments      the unit tests, then the end-to-end tests
 //   --bench <Scene> <width> <height> <seconds>   records one of the test scenes and prints size, GPU and CPU figures

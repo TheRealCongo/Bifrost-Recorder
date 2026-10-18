@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Which DXGI output (monitor, on which graphics adapter) a window is on, for screen capture (ddagrab). Enumeration only: it creates a
 // DXGI factory and asks it questions; no device, no GPU work. C# 5 for Windows' own compiler.
 using System;

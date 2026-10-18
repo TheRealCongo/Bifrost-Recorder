@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // The animated window the tests record: the only thing they ever capture. It sits off every monitor, never takes the focus,
 // and redraws at 60 fps from its own thread (GDI into the window, the way a plain game window shows frames).
 //   Simple  a moving bar, a frame counter and a strip of reference colours (for the colour check)

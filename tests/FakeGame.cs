@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // FakeGame: a stand-in for a DirectX 12 game, for testing the Recorder against what a real game does that a plain window does not:
 // a borderless fullscreen window on one monitor with a Direct3D 11 device and a flip-model DXGI swap chain (FLIP_DISCARD, 2 or 3
 // buffers). Windows then presents it "independent flip" (straight to the display, not composed by DWM), so Windows Graphics Capture

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Sending a recording to the TFH Armory's video library, by the website's contract (25vid-Website docs/ARMORY.md, "Videos"):
 //   GET  /api/armory/videos/me, /options
 //   POST /api/armory/videos/uploads {folder_id, category_id, filename, size, title?, duration?, accept_terms:true} -> {upload_id, part_size, part_count, part_urls_max}

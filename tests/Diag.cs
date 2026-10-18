@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // RecorderTests.exe --diag [fullscreen|windowed|both] [seconds] : which stage of the capture and encode starves against a focused,
 // GPU-heavy, fullscreen flip-model window (FakeGame.exe), and what the Recorder does in each mode. Measured, 20 s each by default:
 //   D1 gfxcapture alone (frames straight to a null output)        how many real frames does Windows Graphics Capture deliver?

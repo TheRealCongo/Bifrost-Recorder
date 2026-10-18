@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Bifrost Recorder's window: the windows you can record down the middle, Record and Stop at the bottom. Painted in the
 // Bifrost console style (Look.cs). Everything a test needs to drive it, and to take its picture, is public at the bottom.
 using System;

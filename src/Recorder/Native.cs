@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Windows calls the Recorder needs: the list of windows that can be recorded, and the Job Object that keeps every child
 // process (ffmpeg, ffprobe) from outliving the Recorder, even after a crash. C# 5 for Windows' own compiler.
 using System;

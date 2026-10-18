@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // A stand-in for the TFH Armory's video routes and its bucket, on this PC (HttpListener on 127.0.0.1), for the tests of the upload
 // client. The tests never contact the real site. The key it expects is a made-up one the test generates; it never prints it.
 using System;

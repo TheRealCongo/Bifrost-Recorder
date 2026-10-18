@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // After anything that could touch the GPU, the System log is searched for NVIDIA display driver events (nvlddmkm: engine resets,
 // TDRs) logged since the run began. The first one stops the run at once (exit code 9; the job object ends anything still running)
 // and says so, because on this PC a GPU encoder session started next to a running game has reset the driver and crashed the game.

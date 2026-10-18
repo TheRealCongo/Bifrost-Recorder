@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // "Upload to Armory": send the recording that was just saved to the TFH Armory's video library. A folder and a category from the
 // Armory's own lists, an optional title, the terms (which must be ticked: the site refuses the upload without them), a progress bar
 // and Cancel. The transfer is Armory.cs's UploadJob; this window only drives it. Painted in the Bifrost console style (Look.cs).
