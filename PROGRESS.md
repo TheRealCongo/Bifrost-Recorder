@@ -50,6 +50,15 @@ vsync off, its load tuned until the GPU sat at 99% for 60 fps. Recording it 15 s
 900 different pictures in 900 frames, 0 skipped by the encoder, 5 drawn late, "Keeping up", encoder 30%. This is the case window capture
 starved in (M1b). The window capture half did not run: the safety check stopped the run (next point).
 
+**Live test (M2): for Congo, single-player or offline first (BattlEye trusts OBS's signed hook, but prove it offline before any server).**
+1. Close Medal (its own game hook and encoder would share the game with ours). No test runs while Arma is open.
+2. Open `build\BifrostRecorder.exe` **before** Arma, and wait for "Pick a window, then press Record." (the engine has started).
+3. Start Arma Reforger, single player. Alt+Tab to the Recorder, pick Arma, Record (the chip says game capture). Back to the game.
+4. Play 2 to 3 minutes, then Ctrl+Alt+Shift+R (Ctrl+Alt+R is taken on this PC) to stop.
+5. What to check: the status says Keeping up (not "Falling behind"); the MP4 plays smoothly at 60 fps; the game's FPS with and without
+   recording; the sound is the game's; the log in `<DataFolder>\logs` (or `%LOCALAPPDATA%\Bifrost Recorder\logs`) has the game capture
+   lines ("hooked", "shared texture capture successful").
+
 **A driver reset at engine start.** nvlddmkm event 153 at 02:00:28, the moment libobs finished starting, which in that run happened with
 FakeGame already holding the GPU at 99% and took about 60 s (1.5 s otherwise). Starting libobs opens a test session on every GPU encoder;
 the recording's own NVENC session and 15 s of encoding under the same load caused no further event. This matches M1's finding that new
