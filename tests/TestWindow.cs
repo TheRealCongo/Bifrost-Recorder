@@ -63,6 +63,8 @@ class TestWindow : Form {
     StartPosition = FormStartPosition.Manual;
     Location = Place;
     ClientSize = new Size(w, h);
+    var scr = Screen.FromPoint(Place).Bounds;   // the whole window stays inside the monitor it opens on
+    Location = new Point(Math.Max(scr.X, Math.Min(Place.X, scr.Right - Width)), Math.Max(scr.Y, Math.Min(Place.Y, scr.Bottom - Height)));
     BackColor = Color.Black;
     SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque, true);
     back = new Bitmap(w, h, BackFormat);

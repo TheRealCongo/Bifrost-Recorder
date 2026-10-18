@@ -10,7 +10,7 @@ using System.Windows.Forms;
 static class Palette {
   public static readonly Color Bg = Hex("#0b0d10"), Surface = Hex("#12161b"), Field = Hex("#0e1216"), Rule = Hex("#252c34"), Edge = Hex("#2f3742"),
     Fg = Hex("#e6edf2"), Soft = Hex("#c3ccd5"), Muted = Hex("#a3afba"), Dim = Hex("#8b97a3"), Track = Hex("#2b3139"),
-    Accent = Hex("#8FD94F"), Olive = Hex("#2D3A24"), OnAccent = Hex("#0b0d10"), Red = Hex("#e0463c"), Green = Hex("#3fbf5a");
+    Accent = Hex("#8FD94F"), Olive = Hex("#2D3A24"), OnAccent = Hex("#0b0d10"), Red = Hex("#e0463c"), Green = Hex("#3fbf5a"), Amber = Hex("#e0a43c");
 
   public static Color Hex(string hex) {
     hex = hex.TrimStart('#');

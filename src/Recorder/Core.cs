@@ -7,22 +7,47 @@ using System.IO;
 using System.Text;
 using System.Web.Script.Serialization;
 
+// What BifrostRecorder.settings.json holds. DataFolder is Bifrost Suite's; the other three are experiment switches, not shown in
+// the window (the header chip shows the active set): EncoderProfile standard | gentle, MaxHeight 0 (native) | 720 | 1080 ..., GpuPriority high | normal.
+class AppSettings {
+  public string DataFolder;                  // null when the file gave none
+  public string EncoderProfile = "standard";
+  public int MaxHeight;                      // 0 = record at the window's own size
+  public string GpuPriority = "high";
+  public bool Gentle { get { return EncoderProfile == "gentle"; } }
+}
+
 // BifrostRecorder.settings.json beside the program: Bifrost Suite writes it with DataFolder, the Recorder's work folder.
 static class Settings {
   public const string FileName = "BifrostRecorder.settings.json";
 
-  // DataFolder from the settings file, or null when the file is missing, isn't JSON, or holds no usable absolute folder.
-  public static string DataFolder(string settingsFile) {
+  static Dictionary<string, object> Read(string settingsFile) {
     try {
       if (settingsFile == null || !File.Exists(settingsFile)) return null;
-      var d = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(settingsFile)) as Dictionary<string, object>;
-      object v;
-      if (d == null || !d.TryGetValue("DataFolder", out v) || !(v is string)) return null;
-      string folder = ((string)v).Trim();
-      if (folder.Length == 0 || folder.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || !Path.IsPathRooted(folder)) return null;
-      return folder;
+      return new JavaScriptSerializer().DeserializeObject(File.ReadAllText(settingsFile)) as Dictionary<string, object>;
     } catch (Exception) { return null; }
   }
+
+  // Everything in the file; a missing file, bad JSON or an unusable value gives that setting's default.
+  public static AppSettings Load(string settingsFile) {
+    var s = new AppSettings();
+    var d = Read(settingsFile);
+    if (d == null) return s;
+    object v;
+    if (d.TryGetValue("DataFolder", out v) && v is string) {
+      string folder = ((string)v).Trim();
+      if (folder.Length > 0 && folder.IndexOfAny(Path.GetInvalidPathChars()) < 0 && Path.IsPathRooted(folder)) s.DataFolder = folder;
+    }
+    if (d.TryGetValue("EncoderProfile", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "gentle") s.EncoderProfile = "gentle";
+    if (d.TryGetValue("GpuPriority", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "normal") s.GpuPriority = "normal";
+    if (d.TryGetValue("MaxHeight", out v) && v != null && !(v is bool) && !(v is string)) {
+      try { int h = Convert.ToInt32(v, CultureInfo.InvariantCulture); if (h >= 144 && h <= 8192) s.MaxHeight = h; } catch (Exception) { }
+    }
+    return s;
+  }
+
+  // DataFolder from the settings file, or null when the file is missing, isn't JSON, or holds no usable absolute folder.
+  public static string DataFolder(string settingsFile) { return Load(settingsFile).DataFolder; }
 
   // <DataFolder>\Recordings, or %USERPROFILE%\Videos\Bifrost Recorder when Bifrost Suite hasn't given a folder.
   public static string RecordingsFolder(string settingsFile, string userProfile) {
@@ -30,8 +55,14 @@ static class Settings {
     if (data != null) return Path.Combine(data, "Recordings");
     return Path.Combine(userProfile, "Videos", "Bifrost Recorder");
   }
-}
 
+  // <DataFolder>\logs, or %LOCALAPPDATA%\Bifrost Recorder\logs without one. Never inside the recordings folder.
+  public static string LogsFolder(string settingsFile, string localAppData) {
+    string data = DataFolder(settingsFile);
+    if (data != null) return Path.Combine(data, "logs");
+    return Path.Combine(localAppData, "Bifrost Recorder", "logs");
+  }
+}
 static class FileNames {
   // The program's friendly name for the file name, from the exe's version info (its FileDescription, e.g. "Arma Reforger").
   public static string Friendly(string exePath, string windowTitle) {
@@ -81,6 +112,7 @@ class EncoderProfile {
   public bool Verified;      // run on real hardware here; false = arguments believed right, never run
   public string Chain;       // filters after the 60 fps clock, each preceded by a comma
   public string Note;
+  public string Short;       // the header chip's name for it
 
   // Every tag below describes the pixels the encoder is given. NVENC converts d3d11 BGRA frames itself and measured BT.601
   // limited range (red = Y 81, Cb 90, Cr 240); tagging that BT.709 would shift every colour, so it is tagged as what it is.
@@ -89,10 +121,14 @@ class EncoderProfile {
   const string TagsCpu = "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709";
 
   // The options go after "-map [v]". maxrate is in kilobits a second, scaled to the picture by FfmpegArgs.MaxrateKbps.
-  public string Options(int maxrateKbps, int quality) {
+  // gentle (NVENC only) asks the GPU for less: preset p4, no B-frames, no spatial AQ, no lookahead, a bufsize equal to the ceiling.
+  public string Options(int maxrateKbps, int quality, bool gentle) {
     string max = maxrateKbps + "k", buf = (maxrateKbps * 2) + "k", q = quality.ToString(CultureInfo.InvariantCulture);
     switch (Name) {
       case "hevc_nvenc":
+        if (gentle)
+          return "-c:v hevc_nvenc -preset p4 -tune hq -profile:v main -rc vbr -cq " + q + " -b:v 0 -maxrate " + max + " -bufsize " + max +
+                 " -bf 0 -spatial-aq 0 -rc-lookahead 0 -multipass disabled -g 120";
         // Constant quality with a ceiling: VBR with -cq and no average target, capped by maxrate. Two B-frames, spatial AQ.
         return "-c:v hevc_nvenc -preset p5 -tune hq -profile:v main -rc vbr -cq " + q + " -b:v 0 -maxrate " + max + " -bufsize " + buf +
                " -spatial-aq 1 -bf 2 -b_ref_mode middle -g 120 -forced-idr 1";
@@ -107,16 +143,16 @@ class EncoderProfile {
   }
 
   public static readonly EncoderProfile Nvenc = new EncoderProfile {
-    Name = "hevc_nvenc", Label = "NVIDIA NVENC, HEVC", Codec = "hevc", Hardware = true, Verified = true, Chain = "," + TagsGpu,
+    Name = "hevc_nvenc", Short = "NVENC", Label = "NVIDIA NVENC, HEVC", Codec = "hevc", Hardware = true, Verified = true, Chain = "," + TagsGpu,
     Note = "d3d11 frames straight into the encoder" };
   public static readonly EncoderProfile Amf = new EncoderProfile {
-    Name = "hevc_amf", Label = "AMD AMF, HEVC", Codec = "hevc", Hardware = true, Verified = false, Chain = "," + TagsGpu,
+    Name = "hevc_amf", Short = "AMF", Label = "AMD AMF, HEVC", Codec = "hevc", Hardware = true, Verified = false, Chain = "," + TagsGpu,
     Note = "UNTESTED: written from ffmpeg's documentation, never run on an AMD GPU" };
   public static readonly EncoderProfile Qsv = new EncoderProfile {
-    Name = "hevc_qsv", Label = "Intel Quick Sync, HEVC", Codec = "hevc", Hardware = true, Verified = false, Chain = ",hwmap=derive_device=qsv,format=qsv," + TagsGpu,
+    Name = "hevc_qsv", Short = "QSV", Label = "Intel Quick Sync, HEVC", Codec = "hevc", Hardware = true, Verified = false, Chain = ",hwmap=derive_device=qsv,format=qsv," + TagsGpu,
     Note = "UNTESTED: written from ffmpeg's documentation" };
   public static readonly EncoderProfile Software = new EncoderProfile {
-    Name = "libx264", Label = "Software, H.264 (uses the CPU)", Codec = "h264", Hardware = false, Verified = true,
+    Name = "libx264", Short = "x264 CPU", Label = "Software, H.264 (uses the CPU)", Codec = "h264", Hardware = false, Verified = true,
     Chain = ",hwdownload,format=bgra,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p," + TagsCpu,
     Note = "frames come down to the CPU: only used when no GPU encoder works" };
 
@@ -148,15 +184,33 @@ static class FfmpegArgs {
 
   // The capture itself: this window, at most 60 a second, the pointer drawn, no yellow border (the border option is what
   // makes the capture the window's own area, without its title bar and frame), an even size (encoders need one).
-  public static string Source(long hwnd) {
-    return "gfxcapture=hwnd=" + hwnd + ":max_framerate=" + Fps + ":capture_cursor=true:display_border=false:resize_mode=scale_aspect:width=-2:height=-2";
+  public static string Source(long hwnd) { return Source(hwnd, 0, 0); }
+
+  // With a size (outWidth and outHeight above 0) the capture is scaled to fit that canvas, keeping its shape (resize_mode=scale_aspect,
+  // done by the capture filter itself on the GPU); with 0 it keeps the window's own size, rounded down to even.
+  public static string Source(long hwnd, int outWidth, int outHeight) {
+    string size = outWidth > 0 && outHeight > 0 ? "width=" + outWidth + ":height=" + outHeight : "width=-2:height=-2";
+    return "gfxcapture=hwnd=" + hwnd + ":max_framerate=" + Fps + ":capture_cursor=true:display_border=false:resize_mode=scale_aspect:" + size;
   }
 
-  // Record the window into a .mkv (which survives a crash). width and height are the window's size, for the bitrate ceiling.
-  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv) {
+  // The size of the video for a window of clientWidth x clientHeight and the MaxHeight setting: its own (even) size, or, when it is
+  // taller than MaxHeight, scaled down to MaxHeight keeping its shape. scaled says which.
+  public static void OutputSize(int clientWidth, int clientHeight, int maxHeight, out int width, out int height, out bool scaled) {
+    scaled = maxHeight > 0 && clientHeight > maxHeight;
+    if (!scaled) { width = Math.Max(2, clientWidth & ~1); height = Math.Max(2, clientHeight & ~1); return; }
+    height = Math.Max(2, maxHeight & ~1);
+    width = Math.Max(2, (int)Math.Round(clientWidth * (double)height / clientHeight) & ~1);
+  }
+
+  // Record the window into a .mkv (which survives a crash). width and height are the window's size (its client area).
+  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv) { return Record(enc, hwnd, width, height, mkv, new AppSettings()); }
+
+  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv, AppSettings cfg) {
+    int ow, oh; bool scaled;
+    OutputSize(width, height, cfg.MaxHeight, out ow, out oh, out scaled);
     return "-hide_banner -loglevel warning -y -nostats -progress pipe:1 -stats_period 0.25 " +
-           "-filter_complex " + Quote(Source(hwnd) + ",fps=" + Fps + enc.Chain + "[v]") + " -map \"[v]\" " +
-           enc.Options(MaxrateKbps(width, height), Quality) + " -fps_mode cfr -flush_packets 1 " + Quote(mkv);
+           "-filter_complex " + Quote((scaled ? Source(hwnd, ow, oh) : Source(hwnd)) + ",fps=" + Fps + enc.Chain + "[v]") + " -map \"[v]\" " +
+           enc.Options(MaxrateKbps(ow, oh), Quality, cfg.Gentle) + " -fps_mode cfr -flush_packets 1 " + Quote(mkv);
   }
 
   // mkv to mp4 without re-encoding. hvc1 is the HEVC tag players on Windows, Mac and the web all open.
@@ -176,6 +230,6 @@ static class FfmpegArgs {
     string hw = enc.Hardware ? "-init_hw_device d3d11va=d3d -filter_hw_device d3d " : "";
     string chain = enc.Hardware ? "format=bgra,hwupload" + enc.Chain : "format=bgra" + enc.Chain.Replace(",hwdownload,format=bgra", "");
     return "-hide_banner -loglevel error -nostdin -y " + hw + "-f lavfi -i color=c=0x303840:s=640x360:r=60:d=0.5 -vf " + Quote(chain) + " " +
-           enc.Options(MaxrateKbps(640, 360), Quality) + " -f null -";
+           enc.Options(MaxrateKbps(640, 360), Quality, false) + " -f null -";
   }
 }

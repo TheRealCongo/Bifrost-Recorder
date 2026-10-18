@@ -34,7 +34,9 @@ class MainForm : Form {
   string status = "Pick a window, then press Record.";
   Color statusColor = Palette.Muted;
   string encoderText = "Checking the encoder…";
-  string recordingsFolder;
+  string recordingsFolder, logsFolder;
+  AppSettings cfg = new AppSettings();
+  string gpuShown;   // what the last recording got on the GPU ("high", "above-normal", "normal"); until then the setting
   bool closeWhenDone;
   bool encoderReady;
 
@@ -55,8 +57,10 @@ class MainForm : Form {
     if (Quiet) { StartPosition = FormStartPosition.Manual; Location = new Point(-32000, -32000); }
     else StartPosition = FormStartPosition.CenterScreen;
 
-    recordingsFolder = Settings.RecordingsFolder(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Settings.FileName),
-      Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+    string settingsFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Settings.FileName);
+    cfg = Settings.Load(settingsFile);
+    recordingsFolder = Settings.RecordingsFolder(settingsFile, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+    logsFolder = Settings.LogsFolder(settingsFile, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 
     list.DrawMode = DrawMode.OwnerDrawFixed; list.BorderStyle = BorderStyle.None; list.BackColor = Palette.Surface; list.ForeColor = Palette.Fg;
     list.IntegralHeight = false; list.ItemHeight = P(56);
@@ -72,7 +76,10 @@ class MainForm : Form {
     Controls.Add(record); Controls.Add(refresh); Controls.Add(open);
 
     tick.Interval = 250;
-    tick.Tick += delegate { if (state == State.Recording && current != null) { UpdateRecordingStatus(); InvalidateBottom(); } };
+    tick.Tick += delegate {
+      if (state == State.Recording && current != null) { UpdateRecordingStatus(); InvalidateBottom(); }
+      else if (state == State.Saving && current != null && current.Draining) { SetStatus("Finishing…  " + current.LagSeconds.ToString("0") + " s of video still to write", Palette.Amber); InvalidateBottom(); }
+    };
     DoLayout();
   }
 
@@ -114,13 +121,16 @@ class MainForm : Form {
     tick.Start();
     if (!File.Exists(Ffmpeg.Exe)) { SetStatus("ffmpeg.exe is missing from the bin folder next to the Recorder.", Palette.Red); encoderText = "No ffmpeg"; UpdateButtons(); Invalidate(); return; }
     var t = new Thread(delegate() {
-      try { var enc = EncoderChoice.Detect(Ffmpeg.Exe); Ui(delegate { encoderReady = true; encoderText = EncoderBadge(enc); UpdateButtons(); Invalidate(); }); }
+      try { var enc = EncoderChoice.Detect(Ffmpeg.Exe); Ui(delegate { encoderReady = true; encoderText = ChipText(enc, cfg, gpuShown); UpdateButtons(); Invalidate(); }); }
       catch (Exception ex) { Ui(delegate { SetStatus("Couldn't check the encoder: " + ex.Message, Palette.Red); }); }
     });
     t.IsBackground = true; t.Name = "encoder check"; t.Start();
   }
 
-  static string EncoderBadge(EncoderProfile e) { return (e.Codec == "hevc" ? "HEVC" : "H.264") + " · " + e.Label.Replace(", HEVC", "").Replace(", H.264 (uses the CPU)", " (CPU)"); }
+  // The header chip: the active set, e.g. "HEVC · NVENC · gentle · 1080p · GPU high".
+  public static string ChipText(EncoderProfile e, AppSettings c, string gpu) {
+    return (e.Codec == "hevc" ? "HEVC" : "H.264") + " · " + e.Short + " · " + c.EncoderProfile + " · " + (c.MaxHeight > 0 ? c.MaxHeight + "p" : "native") + " · GPU " + (gpu ?? c.GpuPriority);
+  }
 
   protected override void OnActivated(EventArgs e) { base.OnActivated(e); if (state == State.Idle && IsHandleCreated && !Quiet) ReloadWindows(); }
 
@@ -272,14 +282,15 @@ class MainForm : Form {
     var enc = EncoderChoice.Picked ?? EncoderProfile.Software;
     string folder = recordingsFolder;
     var t = new Thread(delegate() {
-      Size sz = Native.FrameSize(w.Handle);
+      Size sz = Native.ClientSize(w.Handle);   // what the capture records: the client area
+      if (sz.Width <= 0 || sz.Height <= 0) sz = Native.FrameSize(w.Handle);
       string baseName = FileNames.Unique(folder, FileNames.BaseName(FileNames.Friendly(w.ExePath, w.Title), DateTime.Now));
-      var rec = new Recording(enc, w.Handle, sz.Width > 0 ? sz.Width : w.Width, sz.Height > 0 ? sz.Height : w.Height, folder, baseName);
+      var rec = new Recording(enc, w.Handle, sz.Width > 0 ? sz.Width : w.Width, sz.Height > 0 ? sz.Height : w.Height, folder, baseName, cfg, logsFolder);
       string error;
       bool ok = rec.Start(out error, 15000);
       Ui(delegate {
         if (!ok) { state = State.Idle; UpdateButtons(); SetStatus(error, Palette.Red); if (closeWhenDone) Close(); return; }
-        current = rec;
+        current = rec; gpuShown = rec.GpuPriorityResult; encoderText = ChipText(enc, cfg, gpuShown);
         rec.Ended += delegate(string why) { Ui(delegate { if (state == State.Recording && current == rec) BeginStop(why + ". Saving…"); }); };
         state = State.Recording; UpdateButtons(); UpdateRecordingStatus(); Invalidate();
         if (closeWhenDone) BeginStop("Saving before closing…");
@@ -292,7 +303,8 @@ class MainForm : Form {
     if (current == null) return;
     string size = Megabytes(current.FileBytes);
     string drops = current.Drop > 0 ? "  ·  " + current.Drop + " dropped" : "";
-    SetStatus("Recording " + (target.ExeName.Length > 0 ? target.ExeName : target.Title) + "  ·  " + current.Encoder.Label.Replace(", HEVC", "") + "  ·  " + size + drops, Palette.Soft);
+    // whether the encoder is keeping up with the window: ffmpeg's progress, worked out over the last few seconds (Telemetry)
+    SetStatus("Recording " + (target.ExeName.Length > 0 ? target.ExeName : target.Title) + "  ·  " + size + drops + "  ·  " + current.Health, current.Behind ? Palette.Amber : Palette.Soft);
   }
 
   static string Megabytes(long bytes) { return bytes >= 1024L * 1024 * 1024 ? (bytes / 1073741824.0).ToString("0.00") + " GB" : (bytes / 1048576.0).ToString("0.0") + " MB"; }
@@ -300,8 +312,8 @@ class MainForm : Form {
   void BeginStop(string why) {
     if (state != State.Recording || current == null) return;
     state = State.Saving; UpdateButtons();
-    SetStatus(why ?? "Saving…", Palette.Muted);
     var rec = current;
+    SetStatus(why ?? (rec.LagSeconds > 1.5 || rec.Behind ? "Finishing…  " + rec.LagSeconds.ToString("0") + " s of video still to write" : "Saving…"), rec.LagSeconds > 1.5 || rec.Behind ? Palette.Amber : Palette.Muted);
     var t = new Thread(delegate() {
       RecordingResult res;
       try { res = rec.Stop(); }
@@ -336,6 +348,9 @@ class MainForm : Form {
   public Recording Current { get { return current; } }
   public bool RecordEnabled { get { return record.Enabled; } }
   public string RecordText { get { return record.Text; } }
+  public string ChipTextNow { get { return encoderText; } }
+  public AppSettings Config { get { return cfg; } set { cfg = value; } }
+  public string LogsFolder { get { return logsFolder; } set { logsFolder = value; } }
 
   public bool SelectHwnd(IntPtr h) {
     for (int i = 0; i < list.Items.Count; i++) if (((WindowInfo)list.Items[i]).Handle == h) { list.SelectedIndex = i; return true; }

@@ -34,6 +34,7 @@ static class Native {
   [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr region, uint flags);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT value, int size);
   [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int value, int size);
@@ -100,6 +101,12 @@ static class Native {
   }
 
   public static bool IsMinimized(IntPtr h) { return IsIconic(h); }
+
+  // The size of the window's client area: what the capture records (it leaves out the title bar and frame).
+  public static Size ClientSize(IntPtr h) {
+    RECT r;
+    return GetClientRect(h, out r) ? new Size(r.Right - r.Left, r.Bottom - r.Top) : Size.Empty;
+  }
 
   // The size of the window's visible frame, or 0 x 0 when it can't be read.
   public static Size FrameSize(IntPtr h) {
@@ -215,5 +222,38 @@ static class Proc {
     lock (e) stderr = e.ToString();
     p.Dispose();
     return code;
+  }
+}
+
+// How the GPU's scheduler ranks a process against others (what OBS does for itself): an encoder starved by a game that keeps the GPU
+// at 100% falls behind, so ffmpeg is ranked above normal. HIGH first, ABOVE_NORMAL if that is refused, never REALTIME (that needs
+// administrator rights and can freeze the PC). The CPU priority is left alone.
+static class GpuScheduling {
+  [DllImport("gdi32.dll")] static extern int D3DKMTSetProcessSchedulingPriorityClass(IntPtr process, int priority);
+  [DllImport("gdi32.dll")] static extern int D3DKMTGetProcessSchedulingPriorityClass(IntPtr process, out int priority);
+
+  public const int Normal = 2, AboveNormal = 3, High = 4;   // D3DKMT_SCHEDULINGPRIORITYCLASS
+
+  public static string Name(int c) {
+    switch (c) { case 0: return "IDLE"; case 1: return "BELOW_NORMAL"; case 2: return "NORMAL"; case 3: return "ABOVE_NORMAL"; case 4: return "HIGH"; case 5: return "REALTIME"; default: return "class " + c; }
+  }
+
+  public static string Hex(int ntstatus) { return "0x" + ((uint)ntstatus).ToString("X8"); }
+
+  // One go at it: HIGH, then ABOVE_NORMAL. Returns the class that took (High or AboveNormal) or -1; log gets each NTSTATUS.
+  public static int Try(IntPtr process, Action<string> log) {
+    foreach (int want in new[] { High, AboveNormal }) {
+      int status;
+      try { status = D3DKMTSetProcessSchedulingPriorityClass(process, want); }
+      catch (Exception ex) { log("D3DKMTSetProcessSchedulingPriorityClass is not available: " + ex.GetType().Name); return -1; }
+      log("D3DKMTSetProcessSchedulingPriorityClass(" + Name(want) + ") = " + Hex(status) + (status >= 0 ? " (success)" : " (refused)"));
+      if (status >= 0) {
+        int got;
+        try { int s2 = D3DKMTGetProcessSchedulingPriorityClass(process, out got); log("D3DKMTGetProcessSchedulingPriorityClass = " + Hex(s2) + ", class " + (s2 >= 0 ? Name(got) : "?")); }
+        catch (Exception) { }
+        return want;
+      }
+    }
+    return -1;
   }
 }

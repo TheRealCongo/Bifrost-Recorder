@@ -19,7 +19,7 @@ using System.Windows.Forms;
 static class RecorderTests {
   [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
   static int passed, failed;
-  static string project, build, outDir, shotsDir;
+  static string project, build, outDir, shotsDir, throwDir;
   const string WindowPrefix = "Bifrost Recorder test window";
 
   static void Check(string name, bool ok, string detail = null) {
@@ -38,23 +38,25 @@ static class RecorderTests {
     build = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     project = Path.GetFullPath(Path.Combine(build, ".."));
     outDir = Path.Combine(build, "test-output");
-    shotsDir = Path.Combine(project, "docs", "screenshots", "m1");
+    shotsDir = Path.Combine(project, "docs", "screenshots", "m1b");   // the pictures kept for the Dev timeline
+    throwDir = Path.Combine(outDir, "shots");                               // the other pictures the tests take, not kept
     TestWindow.LayerAlpha = 1;
 
     if (args.Length > 0 && args[0] == "--job-child") return JobChild();   // started by a run that already passed the guard; CPU only
     if (args.Length > 0 && args[0] == "--guard-check") { Console.WriteLine("game running: " + (RunningGame() ?? "none")); return 0; }   // reads the process list only; nothing else
     if (args.Length > 0 && args[0] == "--guard-test") { bool go = Guard(); Console.WriteLine("guard says: " + (go ? "go" : "refuse")); return go ? 0 : 2; }   // the guard and nothing after it
+    if (args.Length > 0 && args[0] == "--unit") return UnitOnly();   // no GPU, no windows: safe while a game runs
     if (!Guard()) return 2;
     if (args.Length > 0 && args[0] == "--bench") return Bench(args);
     if (args.Length > 0 && args[0] == "--hold") return Hold(args);
 
     if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
     Directory.CreateDirectory(outDir);
-    Directory.CreateDirectory(shotsDir);
+    Directory.CreateDirectory(shotsDir); Directory.CreateDirectory(throwDir);
     Console.WriteLine("Counts before: " + Counts());
     var watch = new Watcher(); watch.Start();
     try {
-      Units();
+      Units(true);
       EndToEnd(watch);
     } catch (Exception ex) { Check("the run finished", false, ex.ToString()); }
     var violations = watch.Stop();
@@ -117,7 +119,22 @@ static class RecorderTests {
   }
 
   // ------------------------------------------------------------------------------------------------ unit tests
-  static void Units() {
+  // --unit: only the checks that need neither the GPU nor a window (so they may run next to a game): no test encode, no capture.
+  static int UnitOnly() {
+    if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+    Directory.CreateDirectory(outDir);
+    Console.WriteLine("Counts before: " + Counts());
+    try { Units(false); } catch (Exception ex) { Check("the run finished", false, ex.ToString()); }
+    int alive = 0;
+    lock (Proc.Started) foreach (int pid in Proc.Started) { try { var p = Process.GetProcessById(pid); if (!p.HasExited) alive++; } catch (Exception) { } }
+    Check("no process the tests started is still running", alive == 0, alive + " alive of " + Proc.Started.Count);
+    Console.WriteLine("Counts after:  " + Counts());
+    Console.WriteLine();
+    Console.WriteLine(passed + " passed, " + failed + " failed (unit tests only)");
+    return failed == 0 ? 0 : 1;
+  }
+
+  static void Units(bool gpu) {
     Console.WriteLine("== unit tests");
     string tmp = Path.Combine(outDir, "unit"); Directory.CreateDirectory(tmp);
     string profile = @"C:\Users\Someone";
@@ -212,8 +229,122 @@ static class RecorderTests {
     foreach (var w in found) if (string.IsNullOrWhiteSpace(w.Title) || w.ProcessId == own || w.Handle == IntPtr.Zero) sane = false;
     Check("the live window list is well formed (count only; titles are not printed)", sane, found.Count + " windows");
 
+    UnitsM1b(tmp);
     JobTest();
-    EncoderTest();
+    if (gpu) EncoderTest();
+  }
+
+  // ------------------------------------------------------------------------------------------------ M1b: switches, telemetry, log
+  static void UnitsM1b(string tmp) {
+    // the three experiment switches in BifrostRecorder.settings.json
+    string sw = Path.Combine(tmp, "switches.json");
+    File.WriteAllText(sw, "{\"ManagedBy\":\"Bifrost Suite\",\"DataFolder\":\"D:\\\\Suite\\\\Bifrost Recorder\",\"EncoderProfile\":\"gentle\",\"MaxHeight\":1080,\"GpuPriority\":\"normal\"}");
+    var c = Settings.Load(sw);
+    Check("switches are read: gentle, 1080, normal, and DataFolder beside them", c.Gentle && c.MaxHeight == 1080 && c.GpuPriority == "normal" && c.DataFolder == @"D:\Suite\Bifrost Recorder", c.EncoderProfile + " " + c.MaxHeight + " " + c.GpuPriority);
+    var d = Settings.Load(Path.Combine(tmp, "absent.json"));
+    Check("no settings file: standard, native size, GPU high, no DataFolder", !d.Gentle && d.EncoderProfile == "standard" && d.MaxHeight == 0 && d.GpuPriority == "high" && d.DataFolder == null);
+    File.WriteAllText(sw, "{\"EncoderProfile\":\"turbo\",\"MaxHeight\":\"1080\",\"GpuPriority\":\"max\"}");
+    c = Settings.Load(sw);
+    Check("unusable switch values fall back to the defaults", c.EncoderProfile == "standard" && c.MaxHeight == 0 && c.GpuPriority == "high");
+    File.WriteAllText(sw, "{\"EncoderProfile\":\" GENTLE \",\"MaxHeight\":720,\"GpuPriority\":\"Normal\"}");
+    c = Settings.Load(sw);
+    Check("switch values ignore case and spaces; MaxHeight 720", c.Gentle && c.MaxHeight == 720 && c.GpuPriority == "normal");
+    File.WriteAllText(sw, "{\"MaxHeight\":100}"); Check("a MaxHeight below 144 means native", Settings.Load(sw).MaxHeight == 0);
+    File.WriteAllText(sw, "{\"MaxHeight\":0}"); Check("MaxHeight 0 means native", Settings.Load(sw).MaxHeight == 0);
+    File.WriteAllText(sw, "{\"MaxHeight\":true}"); Check("MaxHeight true is not a number", Settings.Load(sw).MaxHeight == 0);
+    File.WriteAllText(sw, "{\"EncoderProfile\":\"standard\",\"MaxHeight\":0,\"GpuPriority\":\"high\"}");
+    Check("a settings file without DataFolder still saves to %USERPROFILE%\\Videos\\Bifrost Recorder", Settings.RecordingsFolder(sw, @"C:\Users\Someone") == @"C:\Users\Someone\Videos\Bifrost Recorder");
+    Check("logs: %LOCALAPPDATA%\\Bifrost Recorder\\logs without a DataFolder", Settings.LogsFolder(sw, @"C:\Users\Someone\AppData\Local") == @"C:\Users\Someone\AppData\Local\Bifrost Recorder\logs");
+    File.WriteAllText(sw, "{\"DataFolder\":\"D:\\\\Suite\\\\Bifrost Recorder\"}");
+    Check("logs: <DataFolder>\\logs, and never the recordings folder", Settings.LogsFolder(sw, @"C:\L") == @"D:\Suite\Bifrost Recorder\logs" && Settings.LogsFolder(sw, @"C:\L") != Settings.RecordingsFolder(sw, @"C:\U") && !Settings.LogsFolder(sw, @"C:\L").StartsWith(Settings.RecordingsFolder(sw, @"C:\U")));
+
+    // the gentle NVENC profile
+    var gentle = new AppSettings { EncoderProfile = "gentle" };
+    string g = FfmpegArgs.Record(EncoderProfile.Nvenc, 1, 1920, 1080, "a.mkv", gentle);
+    Check("gentle: preset p4, tune hq, VBR cq 24, no B-frames, no spatial AQ, no lookahead, multipass off, 2 s keyframes",
+      g.Contains("-c:v hevc_nvenc -preset p4 -tune hq -profile:v main -rc vbr -cq 24 -b:v 0") && g.Contains("-bf 0") && g.Contains("-spatial-aq 0") && g.Contains("-rc-lookahead 0") && g.Contains("-multipass disabled") && g.Contains("-g 120"), g);
+    Check("gentle: bufsize equals the ceiling (30000k), not double", g.Contains("-maxrate 30000k -bufsize 30000k"));
+    Check("gentle: no B-frame reference mode, no forced IDR", !g.Contains("-b_ref_mode") && !g.Contains("-forced-idr") && !g.Contains("-spatial-aq 1"));
+    string st = FfmpegArgs.Record(EncoderProfile.Nvenc, 1, 1920, 1080, "a.mkv", new AppSettings());
+    Check("standard is unchanged: preset p5, 2 B-frames, spatial AQ, bufsize double", st.Contains("-preset p5") && st.Contains("-bf 2 -b_ref_mode middle") && st.Contains("-spatial-aq 1") && st.Contains("-maxrate 30000k -bufsize 60000k"));
+    Check("gentle changes only the NVENC profile (AMF and QSV arguments are the same as standard)",
+      FfmpegArgs.Record(EncoderProfile.Amf, 1, 1920, 1080, "a.mkv", gentle) == FfmpegArgs.Record(EncoderProfile.Amf, 1, 1920, 1080, "a.mkv") && FfmpegArgs.Record(EncoderProfile.Qsv, 1, 1920, 1080, "a.mkv", gentle) == FfmpegArgs.Record(EncoderProfile.Qsv, 1, 1920, 1080, "a.mkv"));
+
+    // MaxHeight: the capture filter scales on the GPU (resize_mode=scale_aspect with an explicit size)
+    int w, h; bool scaled;
+    FfmpegArgs.OutputSize(2560, 1440, 1080, out w, out h, out scaled); Check("MaxHeight 1080: 2560x1440 becomes 1920x1080", w == 1920 && h == 1080 && scaled);
+    FfmpegArgs.OutputSize(2560, 1440, 720, out w, out h, out scaled); Check("MaxHeight 720: 2560x1440 becomes 1280x720", w == 1280 && h == 720 && scaled);
+    FfmpegArgs.OutputSize(3440, 1440, 1080, out w, out h, out scaled); Check("MaxHeight 1080: 3440x1440 ultrawide becomes 2580x1080 (shape kept, even)", w == 2580 && h == 1080 && scaled, w + "x" + h);
+    FfmpegArgs.OutputSize(1920, 1080, 1080, out w, out h, out scaled); Check("a window already at MaxHeight is not scaled", w == 1920 && h == 1080 && !scaled);
+    FfmpegArgs.OutputSize(1280, 720, 1080, out w, out h, out scaled); Check("a window smaller than MaxHeight is never scaled up", w == 1280 && h == 720 && !scaled);
+    FfmpegArgs.OutputSize(1279, 719, 0, out w, out h, out scaled); Check("native size is the client area rounded down to even", w == 1278 && h == 718 && !scaled);
+    FfmpegArgs.OutputSize(1281, 1441, 1080, out w, out h, out scaled); Check("odd sizes scale to even ones", w % 2 == 0 && h % 2 == 0 && h == 1080 && scaled, w + "x" + h);
+    string sc = FfmpegArgs.Record(EncoderProfile.Nvenc, 7, 2560, 1440, "a.mkv", new AppSettings { MaxHeight = 1080 });
+    Check("scaled capture: width=1920:height=1080 with resize_mode=scale_aspect, on the GPU (no scale filter, no hwdownload)", sc.Contains("gfxcapture=hwnd=7:max_framerate=60:capture_cursor=true:display_border=false:resize_mode=scale_aspect:width=1920:height=1080") && !sc.Contains("hwdownload") && !sc.Contains("scale_d3d11") && !sc.Contains(",scale="), sc);
+    Check("the ceiling follows the scaled size (1080p: 30000k), not the window's", sc.Contains("-maxrate 30000k"));
+    Check("unscaled capture keeps width=-2:height=-2", FfmpegArgs.Record(EncoderProfile.Nvenc, 7, 1920, 1080, "a.mkv", new AppSettings { MaxHeight = 1080 }).Contains("width=-2:height=-2"));
+    var plan = new Recording(EncoderProfile.Nvenc, IntPtr.Zero, 2560, 1440, tmp, "plan", new AppSettings { MaxHeight = 720 }, null);
+    Check("a Recording works out its video size from the settings", plan.OutWidth == 1280 && plan.OutHeight == 720, plan.OutWidth + "x" + plan.OutHeight);
+
+    // the header chip
+    Check("chip: standard native", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings(), null) == "HEVC · NVENC · standard · native · GPU high", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings(), null));
+    Check("chip: gentle 1080p GPU normal", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings { EncoderProfile = "gentle", MaxHeight = 1080, GpuPriority = "normal" }, null) == "HEVC · NVENC · gentle · 1080p · GPU normal");
+    Check("chip: shows what the GPU actually granted once known", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings(), "above-normal") == "HEVC · NVENC · standard · native · GPU above-normal");
+    Check("chip: software encoder", MainForm.ChipText(EncoderProfile.Software, new AppSettings(), null).StartsWith("H.264 · x264 CPU · standard"));
+
+    // GPU priority names and status formatting (the call itself is made on ffmpeg, in the end-to-end test)
+    Check("GPU priority classes are named (4 HIGH, 3 ABOVE_NORMAL, 2 NORMAL)", GpuScheduling.Name(4) == "HIGH" && GpuScheduling.Name(3) == "ABOVE_NORMAL" && GpuScheduling.Name(2) == "NORMAL" && GpuScheduling.Name(5) == "REALTIME");
+    Check("NTSTATUS values print in hex", GpuScheduling.Hex(0) == "0x00000000" && GpuScheduling.Hex(unchecked((int)0xC0000022)) == "0xC0000022");
+    Check("REALTIME is never one of the classes tried (High=4, AboveNormal=3)", GpuScheduling.High == 4 && GpuScheduling.AboveNormal == 3 && GpuScheduling.High < 5);
+
+    // telemetry: ffmpeg's -progress lines, and when the window says "Keeping up" or "Falling behind"
+    var t = new Telemetry();
+    foreach (string l in new[] { "frame=120", "fps=59.97", "speed=0.986x", "dup_frames=3", "drop_frames=1", "out_time_us=2000000", "total_size=1048576", "speed=N/A", "out_time_us=N/A", "progress=continue", "garbage" }) t.Feed(l);
+    Check("progress lines are read: frame, fps, speed, dup, drop, out_time_us, total_size (N/A and junk ignored)", t.Frames == 120 && Math.Abs(t.Fps - 59.97) < 0.001 && Math.Abs(t.CumulativeSpeed - 0.986) < 0.0001 && t.Dup == 3 && t.Drop == 1 && t.OutUs == 2000000 && t.TotalSize == 1048576);
+    Check("lag: 2 s of video written when the clock says 10 s is 8 s behind", Math.Abs(t.LagSeconds(10) - 8.0) < 1e-9, t.LagSeconds(10).ToString());
+
+    var keep = Simulate(delegate(double now) { return now; }, 12.0, true);   // video written as fast as the clock
+    Check("telemetry: at 1.00x it says Keeping up and is not behind", !keep.Behind && keep.Text.StartsWith("Keeping up") && Math.Abs(keep.WindowSpeed - 1.0) < 0.05, keep.Text);
+    var slow = Simulate(delegate(double now) { return now * 0.5; }, 12.0, true);
+    Check("telemetry: at 0.5x for 12 s it says Falling behind: 0.50x real time", slow.Behind && slow.Text == "Falling behind: 0.50x real time", slow.Text);
+    var early = Simulate(delegate(double now) { return now * 0.5; }, 6.0, true);
+    Check("telemetry: slow for under 5 s is not yet 'behind'", !early.Behind, early.Text);
+    var edge = Simulate(delegate(double now) { return now * 0.94; }, 12.0, true);
+    Check("telemetry: 0.94x counts as behind (below 0.95)", edge.Behind && edge.Text == "Falling behind: 0.94x real time", edge.Text);
+    var ok96 = Simulate(delegate(double now) { return now * 0.96; }, 12.0, true);
+    Check("telemetry: 0.96x is still Keeping up", !ok96.Behind && ok96.Text.StartsWith("Keeping up"), ok96.Text);
+    var recover = Simulate(delegate(double now) { return now < 8 ? now * 0.5 : 4.0 + (now - 8) * 1.0; }, 16.0, true);
+    Check("telemetry: back to 1.00x for a few seconds clears 'behind'", !recover.Behind && recover.Text.StartsWith("Keeping up"), recover.Text);
+    var stall = Simulate(delegate(double now) { return Math.Min(now, 4.0); }, 12.0, false);   // the window stops drawing at 4 s: no new frames, nothing written
+    Check("telemetry: a window that stopped drawing is 'Waiting for the window to draw', not behind", stall.Stalled && !stall.Behind && stall.Text == "Waiting for the window to draw", stall.Text);
+
+    // the log: where, what, and the newest 20
+    string logs = Path.Combine(tmp, "logs"); Directory.CreateDirectory(logs);
+    for (int i = 0; i < 25; i++) { string f = Path.Combine(logs, "old " + i.ToString("00") + ".log"); File.WriteAllText(f, "x"); File.SetLastWriteTimeUtc(f, DateTime.UtcNow.AddMinutes(-100 + i)); }
+    var lg = new RecordingLog(logs, "new one");
+    lg.Line("hello"); lg.Close();
+    var left = new List<string>(Directory.GetFiles(logs, "*.log"));
+    Check("the log keeps the newest 20 (25 old + 1 new gives 20; the oldest are gone)", left.Count == 20 && File.Exists(Path.Combine(logs, "new one.log")) && !File.Exists(Path.Combine(logs, "old 00.log")) && File.Exists(Path.Combine(logs, "old 24.log")), left.Count.ToString());
+    string text = File.ReadAllText(Path.Combine(logs, "new one.log"));
+    Check("a log line carries a clock time and the seconds since the log began", System.Text.RegularExpressions.Regex.IsMatch(text, @"^\d\d:\d\d:\d\d\.\d{3}  \+\d+\.\d{3}s  hello"), text.Trim());
+    var none = new RecordingLog(null, "x"); none.Line("no folder, no problem"); none.Close();
+    Check("no log folder: logging is simply off", none.Path == null);
+  }
+
+  // A pretend recording: every 0.2 s the clock moves and the written video is at written(now); frames keep arriving unless a stall is wanted.
+  static Telemetry Simulate(Func<double, double> written, double seconds, bool framesKeepComing) {
+    var t = new Telemetry();
+    long frames = 0;
+    double lastW = -1;
+    for (double now = 0.2; now <= seconds + 1e-9; now += 0.2) {
+      double w = written(now);
+      if (framesKeepComing || w > lastW + 1e-9) frames += 12;
+      lastW = w;
+      t.Feed("frame=" + frames);
+      t.Feed("out_time_us=" + (long)(w * 1e6));
+      t.Tick(now);
+    }
+    return t;
   }
 
   // A process that is killed outright (what a crash looks like) must take its ffmpeg with it: the Job Object.
@@ -298,7 +429,12 @@ static class RecorderTests {
       var rec = form.Current;
       Note("ffmpeg " + rec.Command);
       WaitFor(delegate { return rec.Elapsed.TotalSeconds >= 8; }, 20000, "8 s");
-      Shot(form.Handle, "03-recording.png");
+      string health8 = rec.Health, chip8 = form.ChipTextNow, status8 = form.StatusText;
+      Shot(form.Handle, "01-recording-speed-chip.png", true);
+      Note("at 8 s: " + health8 + " | chip: " + chip8 + " | window said: " + status8);
+      Check("the status line says Keeping up (with the speed) while the encoder keeps up", health8.StartsWith("Keeping up"), health8);
+      Check("the chip shows the active set and what the GPU granted", chip8 == "HEVC · NVENC · standard · native · GPU " + rec.GpuPriorityResult, chip8);
+      string logPath = rec.LogPath;
       WaitFor(delegate { return rec.Elapsed.TotalSeconds >= 20; }, 40000, "20 s");
       double elapsed = rec.Elapsed.TotalSeconds;
       long cpuMs = (long)rec.Cpu.TotalMilliseconds;
@@ -310,6 +446,7 @@ static class RecorderTests {
       Note("the test window drew " + (moving.Drawn - d0) + " frames in " + clock.Elapsed.TotalSeconds.ToString("0.0") + " s (" + drawnRate.ToString("0.0") + "/s), " + (moving.Late - l0) + " late");
       Note("ffmpeg CPU time " + cpuMs + " ms in " + elapsed.ToString("0.0") + " s of recording");
       CheckMainRecording(res, elapsed, form);
+      CheckLog(logPath, "main recording", true);
 
       // the window closing under a recording
       Console.WriteLine("-- the window closes while recording");
@@ -324,6 +461,41 @@ static class RecorderTests {
       var closed = form.LastResult;
       Check("the closed window's recording is a good .mp4 of about 4 seconds, not forced", closed != null && closed.Ok && !closed.Forced && closed.Seconds > 2.5 && closed.Seconds < 6, closed == null ? "null" : closed.Message + " " + closed.Seconds.ToString("0.0"));
       Check("closing test: no .mkv left", Directory.GetFiles(Path.Combine(outDir, "Recordings"), "*.mkv").Length == 0);
+
+      // M1b: the switches through the window: gentle encoder, scaled to 360 high, GPU priority left at normal
+      Console.WriteLine("-- M1b switches: gentle encoder, 360p, GPU priority normal");
+      var swin = TestWindow.Open(Scene.Simple, 1280, 720, true, WindowPrefix + ": gentle and scaled");
+      Invoke(form, delegate { form.Config = new AppSettings { EncoderProfile = "gentle", MaxHeight = 360, GpuPriority = "normal" }; form.ReloadWindows(); form.SelectHwnd(swin.Handle); });
+      form.LastResult = null;
+      Invoke(form, delegate { form.PressRecord(); });
+      Check("switches: recording started", WaitFor(delegate { return form.Mode == MainForm.State.Recording; }, 30000, "recording"), form.StatusText);
+      var srec = form.Current;
+      Thread.Sleep(5000);
+      Check("switches: the chip shows gentle, 360p and GPU normal", form.ChipTextNow == "HEVC · NVENC · gentle · 360p · GPU normal", form.ChipTextNow);
+      Check("switches: ffmpeg was started with the gentle options and a 640x360 capture", srec.Command.Contains("-preset p4") && srec.Command.Contains("-bf 0") && srec.Command.Contains("width=640:height=360") && srec.Command.Contains("resize_mode=scale_aspect"), srec.Command);
+      Shot(form.Handle, "02-chip-gentle-scaled.png", true);
+      string slog = srec.LogPath;
+      Invoke(form, delegate { form.PressRecord(); });
+      Check("switches: Stop saves", WaitFor(delegate { return form.Mode == MainForm.State.Idle && form.LastResult != null; }, 60000, "saved"), form.StatusText);
+      var sres = form.LastResult;
+      if (sres != null && sres.Ok) {
+        var sp = ProbeResult.Run(sres.Mp4, true);
+        Check("switches: the video is HEVC, 640 x 360 (scaled on the GPU by the capture filter), 60/1, about 5 s", sp.Codec == "hevc" && sp.Width == 640 && sp.Height == 360 && sp.FrameRate == "60/1" && Math.Abs(sp.Duration - 5) < 1.5, sp.Codec + " " + sp.Width + "x" + sp.Height + " " + sp.FrameRate + " " + sp.Duration.ToString("0.00"));
+        string spng = Path.Combine(throwDir, "scaled-frame.png"), so0, se0;
+        Proc.Run(Ffmpeg.Exe, "-hide_banner -loglevel error -nostdin -y -ss 3 -i " + FfmpegArgs.Quote(sres.Mp4) + " -frames:v 1 " + FfmpegArgs.Quote(spng), 30000, out so0, out se0);
+        if (File.Exists(spng)) using (var b = new Bitmap(spng)) {
+          int worst = 0;
+          for (int i = 0; i < TestWindow.Swatches.Length; i++) {   // the swatches, half their size at 360 high: centre of each
+            var want = TestWindow.Swatches[i]; var got = b.GetPixel((20 + i * TestWindow.SwatchWidth + TestWindow.SwatchWidth / 2) / 2, (360 * 2 - TestWindow.SwatchHeight - 20 + TestWindow.SwatchHeight / 2) / 2);
+            worst = Math.Max(worst, Math.Max(Math.Abs(got.R - want.R), Math.Max(Math.Abs(got.G - want.G), Math.Abs(got.B - want.B))));
+          }
+          Check("switches: the scaled picture still has the right colours (worst error " + worst + " of 255)", worst <= 10);
+        }
+      }
+      string stext = slog != null && File.Exists(slog) ? File.ReadAllText(slog) : "";
+      Check("switches: the log records the settings, the scaling and that GPU priority was left at normal", stext.Contains("settings: EncoderProfile=gentle MaxHeight=360 GpuPriority=normal") && stext.Contains("(scaled by MaxHeight)") && stext.Contains("left at NORMAL"), slog);
+      Invoke(form, delegate { form.Config = new AppSettings(); });
+      swin.CloseWindow();
 
       // the Recorder itself closed under a recording: it finishes the file first, then closes
       Console.WriteLine("-- the Recorder's own window is closed while recording");
@@ -342,6 +514,21 @@ static class RecorderTests {
     }
 
     OtherRecordings();
+  }
+
+  // The recording's log: where it is, what it says. The GPU priority lines (with their NTSTATUS) are printed for the report.
+  static void CheckLog(string logPath, string what, bool gpuHigh) {
+    string logs = Path.Combine(outDir, "logs");
+    Check(what + ": a log was written to the logs folder, and none to the recordings folder", logPath != null && File.Exists(logPath) && Path.GetDirectoryName(logPath) == logs && Directory.GetFiles(Path.Combine(outDir, "Recordings"), "*.log").Length == 0, logPath);
+    if (logPath == null || !File.Exists(logPath)) return;
+    string text = File.ReadAllText(logPath);
+    int lines = 0;
+    foreach (string l in text.Split(new[] { (char)10 })) if (l.Contains("s lag=")) lines++;
+    Check(what + ": the log has the start time, settings, encoder, window and video size, and the ffmpeg command", text.Contains("started 20") && text.Contains("settings: EncoderProfile=standard MaxHeight=0 GpuPriority=high") && text.Contains("encoder hevc_nvenc") && text.Contains("window client area") && text.Contains("ffmpeg -hide_banner"));
+    Check(what + ": about one progress line a second (" + lines + ")", lines >= 15, lines.ToString());
+    Check(what + ": the log says Stop was pressed, that ffmpeg was not forced, and how long Stop took", text.Contains("Stop pressed") && text.Contains("forced: no") && text.Contains("Stop took"));
+    Check(what + ": the log has the GPU priority result with its NTSTATUS", text.Contains("D3DKMTSetProcessSchedulingPriorityClass(HIGH) = 0x"));
+    foreach (string l in text.Split(new[] { (char)10 })) if (l.Contains("gpu priority") || l.Contains("D3DKMT") || l.Contains("Stop pressed") || l.Contains("ffmpeg ended")) Note("log: " + l.Trim());
   }
 
   static void CheckMainRecording(RecordingResult res, double elapsed, MainForm form) {
@@ -367,7 +554,7 @@ static class RecorderTests {
     Note("the Recorder's own report: " + form.StatusText);
 
     // a still from the recording, and its colours against what the window drew
-    string png = Path.Combine(shotsDir, "05-recorded-frame.png");
+    string png = Path.Combine(throwDir, "recorded-frame.png");
     string so, se;
     int code = Proc.Run(Ffmpeg.Exe, "-hide_banner -loglevel error -nostdin -y -ss 10 -i " + FfmpegArgs.Quote(res.Mp4) + " -frames:v 1 " + FfmpegArgs.Quote(png), 30000, out so, out se);
     Check("a still frame at 10 s was pulled from the recorded .mp4", code == 0 && File.Exists(png), se);
@@ -480,7 +667,7 @@ static class RecorderTests {
     var shown = new ManualResetEvent(false);
     var t = new Thread(delegate() {
       f = new MainForm();
-      f.WindowFilter = filter; f.RecordingsFolder = folder;
+      f.WindowFilter = filter; f.RecordingsFolder = folder; f.LogsFolder = Path.Combine(outDir, "logs");
       f.Shown += delegate { shown.Set(); };
       Application.Run(f);
     });
@@ -498,15 +685,16 @@ static class RecorderTests {
     return cond();
   }
 
-  // A picture of one of the tests' own windows (PrintWindow, full content) into docs\screenshots\m1.
-  static void Shot(IntPtr h, string name) {
+  // A picture of one of the tests' own windows (PrintWindow, full content). keep puts it in docs\screenshots\m1b for the Dev timeline;
+  // otherwise it goes to build\test-output\shots and is thrown away with the rest of the test output.
+  static void Shot(IntPtr h, string name, bool keep = false) {
     Bitmap bmp = null;
     var ctl = Control.FromHandle(h);
     if (ctl != null && ctl.InvokeRequired) bmp = (Bitmap)ctl.Invoke(new Func<Bitmap>(delegate { return Native.Picture(h); }));
     else bmp = Native.Picture(h);
     Check("screenshot " + name + " taken of the tests' own window", bmp != null);
     if (bmp == null) return;
-    bmp.Save(Path.Combine(shotsDir, name), ImageFormat.Png);
+    bmp.Save(Path.Combine(keep ? shotsDir : throwDir, name), ImageFormat.Png);
     bmp.Dispose();
   }
 
@@ -596,6 +784,8 @@ static class RecorderTests {
   static int Bench(string[] a) {
     var scene = (Scene)Enum.Parse(typeof(Scene), a[1]);
     int w = int.Parse(a[2]), h = int.Parse(a[3]), secs = int.Parse(a[4]);
+    // --bench <Scene> <width> <height> <seconds> [standard|gentle] [MaxHeight] [high|normal]
+    var cfg = new AppSettings { EncoderProfile = a.Length > 5 ? a[5] : "standard", MaxHeight = a.Length > 6 ? int.Parse(a[6]) : 0, GpuPriority = a.Length > 7 ? a[7] : "high" };
     Directory.CreateDirectory(Path.Combine(build, "bench"));
     var win = TestWindow.Open(scene, w, h, false, WindowPrefix + ": bench " + scene);
     lock (TestWindow.Placed) foreach (var placed in TestWindow.Placed) Console.WriteLine("PLACED " + placed);
@@ -607,16 +797,23 @@ static class RecorderTests {
     Console.WriteLine("BASELINE (window drawing, not recording): " + Smi.Summary(smi.Take()));
     Console.WriteLine("BASELINE the test window drew " + (win.Drawn - bd0) + " frames in " + bwall.ToString("0.0") + " s (" + ((win.Drawn - bd0) / bwall).ToString("0.0") + "/s), " + (win.Late - bl0) + " late (>8 ms), render " + (win.RenderTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms, present " + (win.PresentTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms");
     var enc = EncoderChoice.Detect(Ffmpeg.Exe);
-    string name = "bench-" + scene + "-" + w + "x" + h;
-    var rec = new Recording(enc, win.Handle, w, h, Path.Combine(build, "bench"), name);
+    string name = "bench-" + scene + "-" + w + "x" + h + "-" + cfg.EncoderProfile + (cfg.MaxHeight > 0 ? "-" + cfg.MaxHeight : "") + "-gpu" + cfg.GpuPriority;
+    var rec = new Recording(enc, win.Handle, w, h, Path.Combine(build, "bench"), name, cfg, Path.Combine(build, "bench", "logs"));
     long d0 = win.Drawn, l0 = win.Late;
     string err;
     if (!rec.Start(out err, 15000)) { Console.WriteLine("START FAILED " + err); smi.Stop(); win.CloseWindow(); return 1; }
     Console.WriteLine("ffmpeg " + rec.Command);
     smi.Take();
+    double minSpeed = double.NaN; bool everBehind = false;
     var sw = Stopwatch.StartNew();
-    Thread.Sleep(secs * 1000);
+    while (sw.Elapsed.TotalSeconds < secs) {
+      Thread.Sleep(250);
+      double ws = rec.Tele.WindowSpeed;
+      if (!double.IsNaN(ws) && (double.IsNaN(minSpeed) || ws < minSpeed)) minSpeed = ws;
+      if (rec.Tele.Behind) everBehind = true;
+    }
     double wall = sw.Elapsed.TotalSeconds;
+    double cumSpeed = rec.Tele.CumulativeSpeed; string gpuGot = rec.GpuPriorityResult; string health = rec.Health;
     var during = smi.Take();
     TimeSpan cpu = rec.Cpu;
     long drawn = win.Drawn - d0, late = win.Late - l0;
@@ -627,10 +824,14 @@ static class RecorderTests {
     var p = ProbeResult.Run(res.Mp4, true);
     double mb = res.Bytes / 1048576.0;
     Console.WriteLine("RESULT scene=" + scene + " " + w + "x" + h + " encoder=" + enc.Name + " recorded=" + p.Duration.ToString("0.00") + " s frames=" + p.Frames + " r_frame_rate=" + p.FrameRate + " dup=" + res.Dup + " drop=" + res.Drop);
-    Console.WriteLine("RESULT size=" + mb.ToString("0.00") + " MB  =>  " + (mb / p.Duration * 60).ToString("0.0") + " MB per minute  (" + (res.Bytes * 8 / p.Duration / 1e6).ToString("0.0") + " Mb/s average; ceiling " + FfmpegArgs.MaxrateKbps(w, h) / 1000.0 + " Mb/s)");
+    Console.WriteLine("RESULT size=" + mb.ToString("0.00") + " MB  =>  " + (mb / p.Duration * 60).ToString("0.0") + " MB per minute  (" + (res.Bytes * 8 / p.Duration / 1e6).ToString("0.0") + " Mb/s average; ceiling " + FfmpegArgs.MaxrateKbps(rec.OutWidth, rec.OutHeight) / 1000.0 + " Mb/s)");
+    Console.WriteLine("RESULT settings: " + cfg.EncoderProfile + ", MaxHeight " + cfg.MaxHeight + " (video " + rec.OutWidth + "x" + rec.OutHeight + "), GPU priority asked " + cfg.GpuPriority + ", got " + gpuGot);
+    Console.WriteLine("RESULT speed: ffmpeg's own (average since start) " + cumSpeed.ToString("0.000") + "x, slowest 4-second window " + minSpeed.ToString("0.000") + "x, flagged behind: " + (everBehind ? "YES" : "no") + ", status line at the end: " + health + ", Stop took " + res.StopSeconds.ToString("0.0") + " s, forced: " + (res.Forced ? "YES" : "no"));
     Console.WriteLine("RESULT while recording: " + Smi.Summary(during));
     Console.WriteLine("RESULT ffmpeg CPU " + cpu.TotalSeconds.ToString("0.00") + " s over " + wall.ToString("0.0") + " s = " + (100 * cpu.TotalSeconds / wall).ToString("0.0") + "% of one core, " + (100 * cpu.TotalSeconds / wall / Environment.ProcessorCount).ToString("0.00") + "% of the " + Environment.ProcessorCount + "-thread CPU");
     Console.WriteLine("RESULT test window cost per frame: render " + (win.RenderTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms, present " + (win.PresentTicks * 1000.0 / Stopwatch.Frequency / Math.Max(1, win.Drawn)).ToString("0.00") + " ms");
+    double gAvg = 0, eAvg = 0; foreach (var x in during) { gAvg += x[0]; eAvg += x[1]; } if (during.Count > 0) { gAvg /= during.Count; eAvg /= during.Count; }
+    Console.WriteLine("TABLE | " + scene + " " + w + "x" + h + " | " + cfg.EncoderProfile + " | " + rec.OutWidth + "x" + rec.OutHeight + (cfg.MaxHeight > 0 ? " (scaled)" : " (native)") + " | " + (mb / p.Duration * 60).ToString("0.0") + " | " + (res.Bytes * 8 / p.Duration / 1e6).ToString("0.0") + " | " + cumSpeed.ToString("0.00") + "x / " + minSpeed.ToString("0.00") + "x | GPU " + gAvg.ToString("0") + "% enc " + eAvg.ToString("0") + "% | cpu " + (100 * cpu.TotalSeconds / wall).ToString("0.0") + "% of a core | window " + (drawn / wall).ToString("0") + "/s | dup " + res.Dup + " drop " + res.Drop);
     Console.WriteLine("RESULT test window drew " + drawn + " frames in " + wall.ToString("0.0") + " s (" + (drawn / wall).ToString("0.0") + "/s) with " + late + " late (>8 ms) while being recorded");
     string so, se;
     string png = Path.Combine(build, "bench", name + ".png");

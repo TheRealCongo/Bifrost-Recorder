@@ -3,6 +3,28 @@
 Native Windows exe (C# WinForms, C# 5, compiled with Windows' own `csc.exe`, no NuGet), recording one window with the bundled ffmpeg.
 Built like Bifrost Suite: `build.ps1`. Repo is local only (no remote, nothing pushed).
 
+
+## M1b (after the M1 live test of 2026-10-17)
+
+**What the M1 live test showed** (Congo, Arma 2560x1440 borderless, 6 min 15 s, Medal closed): Arma stayed at 55-65 FPS, no crash. The MP4 was only 201.999 s
+(12120 frames, 73.4 MB), 88% of the packets were tiny repeats, and the .mkv had grown at 0.3 to 0.6 x real time. Reading: with the game using the whole GPU the pipeline
+(gfxcapture, NVENC's own RGB to YUV conversion, the encode) was starved at normal GPU priority and managed about 32 encoded frames a second; the fps filter kept
+creating the missing 60 fps repeats (each one is encoder work too), so the encode fell further behind real time, and `q` plus a 10 s wait dropped the backlog (about 173 s).
+
+**M1b changes** (code, unit tests and compile VERIFIED; end-to-end and bench: see "Open issues" below for what has and hasn't been run):
+
+1. **Telemetry**: `-progress` is parsed (frame, fps, speed, dup_frames, drop_frames, out_time_us, total_size). The status line shows `Keeping up · 1.00x`, or after more than
+   5 s below 0.95x over a 4 s window `Falling behind: 0.53x real time` (amber), or `Waiting for the window to draw` when no frames arrive (not "behind"). One log per recording,
+   `<DataFolder>\logs\<name>.log` (or `%LOCALAPPDATA%\Bifrost Recorder\logs` without a DataFolder; never the recordings folder; newest 20 kept): settings, ffmpeg command,
+   GPU-priority NTSTATUS, a progress line every second, Stop timing, forced or not.
+2. **GPU priority**: right after ffmpeg starts `D3DKMTSetProcessSchedulingPriorityClass` is called on its process handle: HIGH (4), else ABOVE_NORMAL (3), never REALTIME; retried
+   for a few seconds in case ffmpeg has not opened the GPU yet; each NTSTATUS is logged, and the class read back. CPU priority untouched.
+3. **Switches** in `BifrostRecorder.settings.json` (not in the UI; the header chip shows the active set, e.g. `HEVC · NVENC · gentle · 1080p · GPU high`):
+   `"EncoderProfile": "standard" | "gentle"`, `"MaxHeight": 0 | 720 | 1080` (any 144 to 8192; done by gfxcapture itself with `width=`/`height=` and
+   `resize_mode=scale_aspect`, on the GPU), `"GpuPriority": "high" | "normal"`. Gentle = `-preset p4 -tune hq -rc vbr -cq 24 -b:v 0 -maxrate M -bufsize M -bf 0 -spatial-aq 0
+   -rc-lookahead 0 -multipass disabled -g 120`. A settings file without DataFolder still saves to `%USERPROFILE%\Videos\Bifrost Recorder`.
+4. **Studio-safe end**: Stop asks the window to repaint first (a closing frame), and if the encoder is behind (more than 1.5 s of video unwritten, or flagged behind) ffmpeg gets up
+   to 30 s to finish after `q` (10 s otherwise) before any kill; the window says `Finishing…  N s of video still to write`.
 ## Live test (M1): for Congo
 
 1. Run `build\BifrostRecorder.exe` (double-click). `build\bin\` has to stay next to it (it holds ffmpeg).
