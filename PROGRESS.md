@@ -24,6 +24,30 @@ creating the missing 60 fps repeats (each one is encoder work too), so the encod
    `resize_mode=scale_aspect`, on the GPU), `"GpuPriority": "high" | "normal"`. Gentle = `-preset p4 -tune hq -rc vbr -cq 24 -b:v 0 -maxrate M -bufsize M -bf 0 -spatial-aq 0
    -rc-lookahead 0 -multipass disabled -g 120`. A settings file without DataFolder still saves to `%USERPROFILE%\Videos\Bifrost Recorder`.
 4. **Studio-safe end**: Stop asks the window to repaint first (a closing frame), and if the encoder is behind (more than 1.5 s of video unwritten, or flagged behind) ffmpeg gets up
+
+### M1c: two more switches to try in a live test (code and unit tests only; never run on the GPU)
+
+Both are in `BifrostRecorder.settings.json`, not in the UI; the chip shows them (`... · native · screen · vfr · GPU high`).
+
+- **`"CaptureMethod": "window"` (default) | `"screen"`.** `screen` records the whole monitor the selected window is on with ffmpeg's `ddagrab` (Desktop Duplication),
+  60 fps, pointer drawn, frames staying Direct3D 11 into NVENC. **It records whatever is on that monitor**, including the Recorder itself if Congo alt-tabs onto that
+  monitor, notifications, other windows over the game. `MaxHeight` is ignored with it (ddagrab can't scale, and `scale_d3d11` doesn't work here); the video is the monitor's size.
+  *Mapping the window to ddagrab's output*: `ddagrab=output_idx=N` counts the outputs of the **adapter of the Direct3D device it is given**, so two numbers are needed and
+  `Screen.AllScreens` order is not used. `Dxgi.cs` asks DXGI itself (`CreateDXGIFactory1`, `EnumAdapters1`, `EnumOutputs`, `GetDesc`) for every adapter and output, takes the
+  window's `HMONITOR` (`MonitorFromWindow`) and finds the output whose `DXGI_OUTPUT_DESC.Monitor` is the same handle, giving (adapter index, output index on that adapter).
+  The command then has `-init_hw_device d3d11va=dda:<adapter> -filter_hw_device dda` (ffmpeg's D3D11 device on that adapter, same enumeration order) and
+  `ddagrab=output_idx=<output>`. On this PC DXGI lists adapter 0 (RTX 3070 Ti) with output 0 = `\.\DISPLAY1` 2560x1440 and output 1 = `\.\DISPLAY2` 1920x1080 (both monitors
+  are on the NVIDIA GPU; the Intel iGPU has none), so DISPLAY2 is `d3d11va=dda:0` with `output_idx=1`. VERIFIED: the enumeration and the HMONITOR match for every monitor Windows has
+  (unit test). NOT verified: ddagrab itself. If the monitor's adapter is not the encoder's GPU (vendor 10DE for NVENC, 1002 AMF, 8086 QSV) the Recorder refuses before starting anything.
+- **`"FrameRateMode": "cfr"` (default) | `"vfr"`.** `vfr` removes the fps filter and the repeats: `-fps_mode passthrough -enc_time_base filter`; ddagrab gets `dup_frames=false`.
+  Only frames that really arrived are encoded, each with its real capture time (the capture filters' time base is 1/10,000,000). Findings from CPU-only ffmpeg runs (libx264,
+  a test pattern with gaps and jittered times; in the unit tests): (1) `-fps_mode passthrough` alone **rounds every time to the 1/60 grid** (the encoder time base defaults to
+  1/frame rate), so `-enc_time_base filter` is needed to keep them exact; (2) `-r 60` with passthrough is **refused by ffmpeg** ("contradictory"), so it is not used; the encoder
+  still reports 60 fps (the capture filter's own frame rate), so it does not derive a rate from the 10 MHz time base (shown here with a lavfi source; the capture filters'
+  link frame rate is from the upstream source, not run); (3) the MKV to MP4 remux with `-c copy` keeps every capture time exactly and the frame count (192 of 240 here), the MP4
+  has time base 1/16000, `avg_frame_rate` is the real average (48 fps) and `r_frame_rate` is a meaningless guess (16000/1). Studio reads `avg_frame_rate` first (Z:\BFStudio\main.js:108),
+  so it shows 48.0 fps. Telemetry is unchanged: speed is still the written video's time (`out_time_us`) against the clock; a window that sends nothing is "Waiting for the
+  window to draw", never "Falling behind". Unit tests check the exact arguments of all four combinations (window or screen, cfr or vfr), the chip, the refusal paths and these ffmpeg behaviours.
    to 30 s to finish after `q` (10 s otherwise) before any kill; the window says `Finishing…  N s of video still to write`.
 ## Live test (M1): for Congo
 

@@ -43,6 +43,7 @@ static class Native {
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
 
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 
   const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_APPWINDOW = 0x40000, DWMWA_CLOAKED = 14, DWMWA_EXTENDED_FRAME_BOUNDS = 9;
   const uint GW_OWNER = 4, PROCESS_QUERY_LIMITED_INFORMATION = 0x1000, RDW_INVALIDATE = 1, RDW_NOERASE = 0x20;

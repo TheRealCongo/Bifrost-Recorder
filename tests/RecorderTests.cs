@@ -230,6 +230,7 @@ static class RecorderTests {
     Check("the live window list is well formed (count only; titles are not printed)", sane, found.Count + " windows");
 
     UnitsM1b(tmp);
+    UnitsM1c(tmp);
     GpuPriorityApiTest();
     JobTest();
     if (gpu) EncoderTest();
@@ -346,6 +347,134 @@ static class RecorderTests {
       t.Tick(now);
     }
     return t;
+  }
+
+  // ------------------------------------------------------------------------------------------------ CaptureMethod and FrameRateMode
+  [DllImport("user32.dll")] static extern IntPtr GetDesktopWindow();
+
+  static void UnitsM1c(string tmp) {
+    // the two new switches
+    string sw = Path.Combine(tmp, "switches2.json");
+    File.WriteAllText(sw, "{\"CaptureMethod\":\"screen\",\"FrameRateMode\":\"vfr\"}");
+    var c = Settings.Load(sw);
+    Check("switches: CaptureMethod screen and FrameRateMode vfr are read", c.Screen && c.Vfr && c.CaptureMethod == "screen" && c.FrameRateMode == "vfr");
+    File.WriteAllText(sw, "{\"CaptureMethod\":\" Screen \",\"FrameRateMode\":\"VFR\"}");
+    c = Settings.Load(sw); Check("switches: ignore case and spaces", c.Screen && c.Vfr);
+    File.WriteAllText(sw, "{\"CaptureMethod\":\"monitor\",\"FrameRateMode\":\"variable\"}");
+    c = Settings.Load(sw); Check("switches: unusable values mean window capture and cfr", !c.Screen && !c.Vfr && c.CaptureMethod == "window" && c.FrameRateMode == "cfr");
+    c = Settings.Load(Path.Combine(tmp, "absent2.json")); Check("switches: defaults are window and cfr", !c.Screen && !c.Vfr);
+
+    var onNvidia = new DxgiOutput { Adapter = 0, Output = 0, AdapterName = "NVIDIA GeForce RTX 3070 Ti", VendorId = 0x10DE, DeviceName = @"\\.\DISPLAY1", Desktop = new Rectangle(0, 0, 2560, 1440), Monitor = new IntPtr(1001) };
+    var secondOutput = new DxgiOutput { Adapter = 0, Output = 1, AdapterName = "NVIDIA GeForce RTX 3070 Ti", VendorId = 0x10DE, DeviceName = @"\\.\DISPLAY3", Desktop = new Rectangle(2560, 0, 1920, 1080), Monitor = new IntPtr(1003) };
+    var onIntel = new DxgiOutput { Adapter = 1, Output = 0, AdapterName = "Intel(R) UHD Graphics 630", VendorId = 0x8086, DeviceName = @"\\.\DISPLAY2", Desktop = new Rectangle(352, -1080, 1920, 1080), Monitor = new IntPtr(1002) };
+    var screenCfr = new AppSettings { CaptureMethod = "screen" };
+    var screenVfr = new AppSettings { CaptureMethod = "screen", FrameRateMode = "vfr" };
+    var windowVfr = new AppSettings { FrameRateMode = "vfr" };
+
+    // window + cfr is the default and is checked above; window + vfr
+    string wv = FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1920, 1080, "a.mkv", windowVfr);
+    Check("window + vfr: gfxcapture straight into the chain, no fps filter, passthrough with the exact capture times", wv.Contains("gfxcapture=hwnd=9:") && !wv.Contains("fps=60") && wv.Contains("-fps_mode passthrough -enc_time_base filter") && !wv.Contains("-fps_mode cfr"), wv);
+    Check("vfr never uses -r (ffmpeg refuses it with passthrough) and never repeats frames", !wv.Contains(" -r ") && !wv.Contains("fps="));
+    Check("vfr keeps the frames on the GPU and the colour tags", !wv.Contains("hwdownload") && wv.Contains("setparams=colorspace=smpte170m:range=tv:color_primaries=bt709:color_trc=bt709"));
+    Check("window + cfr still has the fps filter and cfr mode", FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1920, 1080, "a.mkv", new AppSettings()).Contains(",fps=60,") && FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1920, 1080, "a.mkv", new AppSettings()).Contains("-fps_mode cfr"));
+
+    // screen capture
+    string sc = FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", screenCfr, onNvidia);
+    Check("screen + cfr: ddagrab on DXGI adapter 0 output 0, 60 fps, pointer drawn, frames stay Direct3D 11", sc.Contains("-init_hw_device d3d11va=dda:0 -filter_hw_device dda") && sc.Contains("ddagrab=output_idx=0:framerate=60:draw_mouse=true,fps=60,setparams=") && !sc.Contains("gfxcapture") && !sc.Contains("hwdownload") && !sc.Contains("hwupload"), sc);
+    Check("screen + cfr: constant 60 fps like window capture, dup_frames left at its default", sc.Contains("-fps_mode cfr") && !sc.Contains("dup_frames"));
+    Check("screen: the video is the monitor's size, so the ceiling is for 2560x1440 (53300k) whatever the window's size", sc.Contains("-maxrate 53300k"), sc);
+    Check("screen: MaxHeight is ignored (ddagrab can't scale)", FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", new AppSettings { CaptureMethod = "screen", MaxHeight = 720 }, onNvidia) == sc);
+    string sv = FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", screenVfr, onNvidia);
+    Check("screen + vfr: ddagrab with dup_frames=false, no fps filter, passthrough", sv.Contains("ddagrab=output_idx=0:framerate=60:draw_mouse=true:dup_frames=false,setparams=") && !sv.Contains("fps=60") && sv.Contains("-fps_mode passthrough -enc_time_base filter"), sv);
+    string s2 = FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", screenCfr, secondOutput);
+    Check("screen: output_idx is the output's index on its adapter (the second output of adapter 0 is 1)", s2.Contains("d3d11va=dda:0 ") && s2.Contains("output_idx=1:") && s2.Contains("-maxrate 30000k"), s2);
+    string s3 = FfmpegArgs.Record(EncoderProfile.Software, 9, 1280, 720, "a.mkv", screenCfr, onIntel);
+    Check("screen: the adapter index follows the monitor's adapter (Intel is adapter 1, its own output 0), and the software encoder downloads after ddagrab", s3.Contains("d3d11va=dda:1 ") && s3.Contains("ddagrab=output_idx=0:") && s3.Contains("hwdownload"), s3);
+    Check("screen capture asked for but no monitor known: the window capture arguments are used", FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", screenCfr, null).Contains("gfxcapture=hwnd=9"));
+    Check("gentle works with screen and vfr too", FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", new AppSettings { CaptureMethod = "screen", FrameRateMode = "vfr", EncoderProfile = "gentle" }, onNvidia).Contains("-preset p4 -tune hq"));
+
+    // the chip
+    Check("chip: screen", MainForm.ChipText(EncoderProfile.Nvenc, screenCfr, null) == "HEVC · NVENC · standard · native · screen · GPU high", MainForm.ChipText(EncoderProfile.Nvenc, screenCfr, null));
+    Check("chip: vfr", MainForm.ChipText(EncoderProfile.Nvenc, windowVfr, null) == "HEVC · NVENC · standard · native · vfr · GPU high");
+    Check("chip: gentle, screen, vfr and GPU normal (MaxHeight shows native with screen capture)", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings { EncoderProfile = "gentle", MaxHeight = 1080, CaptureMethod = "screen", FrameRateMode = "vfr", GpuPriority = "normal" }, null) == "HEVC · NVENC · gentle · native · screen · vfr · GPU normal");
+
+    // vendors, and refusing a monitor the encoder can't read before anything starts
+    Check("encoder vendors: NVENC 10DE, AMF 1002, QSV 8086, software none", DxgiOutput.VendorOf(EncoderProfile.Nvenc) == 0x10DE && DxgiOutput.VendorOf(EncoderProfile.Amf) == 0x1002 && DxgiOutput.VendorOf(EncoderProfile.Qsv) == 0x8086 && DxgiOutput.VendorOf(EncoderProfile.Software) == 0);
+    string err;
+    var mismatch = new Recording(EncoderProfile.Nvenc, GetDesktopWindow(), 1280, 720, Path.Combine(tmp, "rec"), "mismatch", screenCfr, null, onIntel);
+    bool started = mismatch.Start(out err, 1000);
+    Check("screen on a monitor of another GPU than the encoder's is refused with a clear message, and nothing is started", !started && err.Contains("Intel(R) UHD Graphics 630") && err.Contains("can't feed NVENC") && mismatch.Command == null, err);
+    var nomon = new Recording(EncoderProfile.Nvenc, GetDesktopWindow(), 1280, 720, Path.Combine(tmp, "rec"), "nomon", screenCfr, null, null);
+    started = nomon.Start(out err, 1000);
+    Check("screen without a known monitor is refused, nothing is started", !started && err.Contains("Screen capture needs the monitor") && nomon.Command == null, err);
+
+    // which DXGI output a window is on: asked of DXGI, matched by HMONITOR; never by position in Screen.AllScreens
+    var outs = Dxgi.Outputs();
+    foreach (var o in outs) Note("DXGI: " + o);
+    var order = new List<string>(); foreach (var s in Screen.AllScreens) order.Add(s.DeviceName);
+    Note("Screen.AllScreens order: " + string.Join(", ", order.ToArray()));
+    Check("DXGI lists at least one output, each with a monitor handle and a size", outs.Count >= 1 && outs.TrueForAll(delegate(DxgiOutput o) { return o.Monitor != IntPtr.Zero && o.Width > 0 && o.Height > 0 && o.AdapterName.Length > 0; }), outs.Count + " outputs");
+    bool allMatch = true; string why = "";
+    foreach (var s in Screen.AllScreens) {
+      var o = Dxgi.ForPoint(s.Bounds.X + s.Bounds.Width / 2, s.Bounds.Y + s.Bounds.Height / 2);
+      if (o == null || o.Desktop != s.Bounds || o.DeviceName != s.DeviceName) { allMatch = false; why += s.DeviceName + " -> " + (o == null ? "none" : o.ToString()) + "; "; }
+    }
+    Check("every monitor Windows has maps to the DXGI output with the same rectangle and device name (matched by HMONITOR)", allMatch, why);
+    var primary = Dxgi.ForWindow(GetDesktopWindow());
+    Check("a window on the primary monitor (the desktop window) maps to the primary monitor's output", primary != null && primary.Desktop == Screen.PrimaryScreen.Bounds, primary == null ? "none" : primary.ToString());
+    var seen = new HashSet<string>(); bool unique = true;
+    foreach (var o in outs) if (!seen.Add(o.Adapter + "/" + o.Output)) unique = false;
+    Check("adapter/output index pairs are unique", unique);
+
+    // a VFR recording on the CPU (a test pattern with gaps and jittered times, libx264): ffmpeg keeps the real times with the VFR options, and
+    // the MKV to MP4 remux keeps them and the average frame rate stays the real one. No GPU.
+    string vdir = Path.Combine(tmp, "vfr"); Directory.CreateDirectory(vdir);
+    string src = "testsrc2=size=320x240:rate=60:duration=4,select='not(eq(mod(n,5),2))',settb=1/10000000,setpts='PTS+0.003*sin(N*1.3)/TB'";
+    string mkv = Path.Combine(vdir, "v.mkv"), mp4 = Path.Combine(vdir, "v.mp4"), so, se;
+    int code = Proc.Run(Ffmpeg.Exe, "-hide_banner -nostdin -loglevel error -y -f lavfi -i \"" + src + "\" -c:v libx264 -preset ultrafast " + FfmpegArgs.VfrSync + " " + FfmpegArgs.Quote(mkv), 60000, out so, out se);
+    Check("vfr options: a recording with gaps is written (192 of 240 frames kept, none repeated)", code == 0 && File.Exists(mkv), se);
+    var pm = PacketTimes(mkv);
+    double dev = 0; foreach (double t in pm) { double x = t * 60; dev += Math.Abs(x - Math.Round(x)); } dev /= Math.Max(1, pm.Count);
+    Check("vfr options: the capture times are kept (not rounded to the 1/60 grid): mean distance from the grid " + dev.ToString("0.000") + " (about 0.12 exact, 0.01 rounded)", pm.Count == 192 && dev > 0.08, pm.Count + " packets");
+    string so2, se2;
+    int rcode = Proc.Run(Ffmpeg.Exe, "-hide_banner -nostdin -loglevel error -y -f lavfi -i \"" + src + "\" -c:v libx264 -preset ultrafast -fps_mode passthrough -r 60 " + FfmpegArgs.Quote(Path.Combine(vdir, "r.mkv")), 60000, out so2, out se2);
+    Check("-r together with passthrough is refused by ffmpeg (why the Recorder doesn't use it)", rcode != 0, "exit " + rcode);
+    string so3, se3;
+    int qcode = Proc.Run(Ffmpeg.Exe, "-hide_banner -nostdin -loglevel error -y -f lavfi -i \"" + src + "\" -c:v libx264 -preset ultrafast -fps_mode passthrough " + FfmpegArgs.Quote(Path.Combine(vdir, "q.mkv")), 60000, out so3, out se3);
+    var pq = qcode == 0 ? PacketTimes(Path.Combine(vdir, "q.mkv")) : new List<double>();
+    double devQ = 0; foreach (double t in pq) { double x = t * 60; devQ += Math.Abs(x - Math.Round(x)); } devQ /= Math.Max(1, pq.Count);
+    Check("without -enc_time_base filter ffmpeg rounds the times to the 1/60 grid (why the option is there): mean distance " + devQ.ToString("0.000"), pq.Count > 0 && devQ < 0.04, pq.Count + " packets");
+    code = Proc.Run(Ffmpeg.Exe, FfmpegArgs.Remux(EncoderProfile.Software, mkv, mp4), 60000, out so, out se);
+    var pr = ProbeResult.Run(mp4, true);
+    Check("remux of the VFR recording to MP4: 192 frames, 4.0 s, every capture time kept", code == 0 && pr.Ok && pr.Frames == 192 && Math.Abs(pr.Duration - 4.0) < 0.1 && SameTimes(pm, PacketTimes(mp4)), pr.Frames + " frames " + pr.Duration.ToString("0.000") + " s " + pr.Error);
+    double avg = 0; { var parts = (pr.AvgFrameRate ?? "0/1").Split('/'); double n = double.Parse(parts[0]), d = parts.Length > 1 ? double.Parse(parts[1]) : 1; avg = d > 0 ? n / d : 0; }
+    Check("the VFR MP4's average frame rate is the real one (48 fps here), which is what Studio reads first (main.js:108); r_frame_rate is a guess (" + pr.FrameRate + ")", Math.Abs(avg - 48.0) < 1.0, pr.AvgFrameRate + " = " + avg.ToString("0.00"));
+
+    // telemetry in vfr: a window that sends a frame only every 0.5 s still has output time moving with the clock: speed is output time against wall time
+    var t2 = new Telemetry(); long fr = 0;
+    for (double now = 0.2; now <= 12.0 + 1e-9; now += 0.2) { if (Math.Abs(now / 0.5 - Math.Round(now / 0.5)) < 1e-6) fr++; t2.Feed("frame=" + fr); t2.Feed("out_time_us=" + (long)(Math.Floor(now / 0.5) * 0.5 * 1e6)); t2.Tick(now); }
+    Check("telemetry in vfr: sparse real frames with output time moving at the clock's pace is Keeping up (speed " + t2.WindowSpeed.ToString("0.00") + ")", !t2.Behind && !t2.Stalled && t2.Text.StartsWith("Keeping up") && Math.Abs(t2.WindowSpeed - 1.0) < 0.2, t2.Text);
+    var t3 = new Telemetry(); fr = 0;
+    for (double now = 0.2; now <= 14.0 + 1e-9; now += 0.2) { if (now < 3) fr += 12; t3.Feed("frame=" + fr); t3.Feed("out_time_us=" + (long)(Math.Min(now, 3.0) * 1e6)); t3.Tick(now); }
+    Check("telemetry in vfr: no frames at all after 3 s is 'Waiting for the window to draw', not Falling behind", t3.Stalled && !t3.Behind && t3.Text == "Waiting for the window to draw", t3.Text);
+    var slow = new Recording(EncoderProfile.Nvenc, IntPtr.Zero, 1280, 720, tmp, "x", windowVfr, null);
+    Check("a stalled window is not 'video still to write' at Stop", !slow.BehindNow);
+  }
+
+  // Presentation times of a file's video packets, in seconds.
+  static List<double> PacketTimes(string file) {
+    string so, se;
+    Proc.Run(Ffmpeg.ProbeExe, "-v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 " + FfmpegArgs.Quote(file), 30000, out so, out se);
+    var list = new List<double>();
+    foreach (string l in so.Split(new[] { (char)10 })) { double v; if (double.TryParse(l.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v)) list.Add(v); }
+    list.Sort();
+    return list;
+  }
+
+  static bool SameTimes(List<double> a, List<double> b) {
+    if (a.Count != b.Count) return false;
+    for (int i = 0; i < a.Count; i++) if (Math.Abs(a[i] - b[i]) > 0.0011) return false;
+    return true;
   }
 
   // The GPU-priority call, tried on a child that does no GPU work at all (ffmpeg making a test pattern for nothing): what the PC answers

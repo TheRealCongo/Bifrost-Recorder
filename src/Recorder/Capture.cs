@@ -229,6 +229,7 @@ class Recording {
   public readonly string MkvPath, Mp4Path;
   readonly int width, height;
   readonly RecordingLog log;
+  readonly DxgiOutput screen;      // screen capture: the monitor (null for window capture)
   Process proc;
   Thread monitor;
   Stopwatch clock;
@@ -244,13 +245,14 @@ class Recording {
   public event Action<string> Ended;   // the window closed, or ffmpeg ended by itself; the reason. Raised once, from a worker thread.
 
   // width and height are the window's client area (what is captured). logFolder null = no log.
-  public Recording(EncoderProfile encoder, IntPtr hwnd, int width, int height, string folder, string baseName, AppSettings cfg = null, string logFolder = null) {
-    Encoder = encoder; Hwnd = hwnd; this.width = width; this.height = height;
+  public Recording(EncoderProfile encoder, IntPtr hwnd, int width, int height, string folder, string baseName, AppSettings cfg = null, string logFolder = null, DxgiOutput screen = null) {
+    Encoder = encoder; Hwnd = hwnd; this.width = width; this.height = height; this.screen = screen;
     Config = cfg ?? new AppSettings();
     MkvPath = Path.Combine(folder, baseName + ".mkv");
     Mp4Path = Path.Combine(folder, baseName + ".mp4");
     bool scaled;
-    FfmpegArgs.OutputSize(width, height, Config.MaxHeight, out OutWidth, out OutHeight, out scaled);
+    if (Config.Screen && screen != null) { OutWidth = Math.Max(2, screen.Width & ~1); OutHeight = Math.Max(2, screen.Height & ~1); }
+    else FfmpegArgs.OutputSize(width, height, Config.MaxHeight, out OutWidth, out OutHeight, out scaled);
     log = new RecordingLog(logFolder, baseName);
   }
 
@@ -260,6 +262,8 @@ class Recording {
   public long Drop { get { return Tele.Drop; } }
   public string Health { get { return Tele.Text; } }
   public bool Behind { get { return Tele.Behind; } }
+  // Video still to be written: more than 1.5 s unwritten while frames are still coming (a window that has stopped drawing has nothing to write), or flagged behind.
+  public bool BehindNow { get { return (LagSeconds > 1.5 && !Tele.Stalled) || Tele.Behind; } }
   public bool Draining { get { return draining; } }
   public double LagSeconds { get { return Tele.LagSeconds(clock == null ? 0 : clock.Elapsed.TotalSeconds); } }
   public TimeSpan Elapsed { get { return clock == null ? TimeSpan.Zero : clock.Elapsed; } }
@@ -288,11 +292,21 @@ class Recording {
     if (!Native.IsWindow(Hwnd)) { error = "That window has gone."; return false; }
     try { Directory.CreateDirectory(Path.GetDirectoryName(MkvPath)); }
     catch (Exception ex) { error = "Can't make the recordings folder: " + ex.Message; return false; }
-    Command = FfmpegArgs.Record(Encoder, Hwnd.ToInt64(), width, height, MkvPath, Config);
+    if (Config.Screen) {
+      if (screen == null) { error = "Screen capture needs the monitor that window is on, and DXGI does not list it."; return false; }
+      uint vendor = DxgiOutput.VendorOf(Encoder);
+      if (vendor != 0 && screen.VendorId != vendor) { error = "That window's monitor is on " + screen.AdapterName + ", which can't feed " + Encoder.Short + ". Move the window to a monitor on the encoder's GPU, or use window capture."; return false; }
+    }
+    Command = FfmpegArgs.Record(Encoder, Hwnd.ToInt64(), width, height, MkvPath, Config, screen);
     log.Line("Bifrost Recorder " + Application.ProductVersion + " recording log");
     log.Line("started " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + ", " + Environment.ProcessorCount + " logical processors");
-    log.Line("window client area " + width + "x" + height + ", video " + OutWidth + "x" + OutHeight + (OutWidth != (width & ~1) || OutHeight != (height & ~1) ? " (scaled by MaxHeight)" : ""));
-    log.Line("settings: EncoderProfile=" + Config.EncoderProfile + " MaxHeight=" + Config.MaxHeight + " GpuPriority=" + Config.GpuPriority);
+    if (Config.Screen) {
+      log.Line("screen capture (ddagrab): " + screen + "; window client area " + width + "x" + height + "; video is the whole monitor" + (Config.MaxHeight > 0 ? " (MaxHeight is ignored: ddagrab can't scale on the GPU)" : ""));
+      log.Line("ffmpeg device: -init_hw_device d3d11va=dda:" + screen.Adapter + " (DXGI adapter index), ddagrab output_idx=" + screen.Output + " (that adapter's own output index; matched by HMONITOR " + screen.Monitor.ToInt64() + ")");
+    } else
+      log.Line("window client area " + width + "x" + height + ", video " + OutWidth + "x" + OutHeight + (OutWidth != (width & ~1) || OutHeight != (height & ~1) ? " (scaled by MaxHeight)" : ""));
+    log.Line("settings: EncoderProfile=" + Config.EncoderProfile + " MaxHeight=" + Config.MaxHeight + " GpuPriority=" + Config.GpuPriority + " CaptureMethod=" + Config.CaptureMethod + " FrameRateMode=" + Config.FrameRateMode);
+    log.Line("frame timing: " + (Config.Vfr ? "vfr (no fps filter; " + FfmpegArgs.VfrSync + "): only frames that really arrived, with their capture times" : "cfr (fps filter, -fps_mode cfr): a frame every 1/60 s, repeats filling gaps"));
     log.Line("encoder " + Encoder.Name + " (" + Encoder.Label + "); ceiling " + FfmpegArgs.MaxrateKbps(OutWidth, OutHeight) + " kb/s");
     log.Line("ffmpeg " + Command);
     try { proc = Proc.Start(Ffmpeg.Exe, Command, true); }
@@ -368,7 +382,7 @@ class Recording {
     stopping = true;
     if (proc == null) { res.Message = "Nothing was started."; return res; }
     double now = clock == null ? 0 : clock.Elapsed.TotalSeconds, lag = Tele.LagSeconds(now);
-    bool behind = lag > 1.5 || Tele.Behind;
+    bool behind = (lag > 1.5 && !Tele.Stalled) || Tele.Behind;
     draining = behind;
     int limit = behind ? 30000 : 10000;
     log.Line("Stop pressed at " + now.ToString("0.0", CultureInfo.InvariantCulture) + " s: lag " + lag.ToString("0.0", CultureInfo.InvariantCulture) + " s, " + Tele.Text + (behind ? "; waiting up to 30 s for ffmpeg to finish writing" : "; waiting up to 10 s"));

@@ -14,7 +14,11 @@ class AppSettings {
   public string EncoderProfile = "standard";
   public int MaxHeight;                      // 0 = record at the window's own size
   public string GpuPriority = "high";
+  public string CaptureMethod = "window";    // window (gfxcapture) | screen (ddagrab, the whole monitor the window is on)
+  public string FrameRateMode = "cfr";       // cfr (a frame every 1/60 s, repeats filling gaps) | vfr (only real frames, with their real times)
   public bool Gentle { get { return EncoderProfile == "gentle"; } }
+  public bool Screen { get { return CaptureMethod == "screen"; } }
+  public bool Vfr { get { return FrameRateMode == "vfr"; } }
 }
 
 // BifrostRecorder.settings.json beside the program: Bifrost Suite writes it with DataFolder, the Recorder's work folder.
@@ -39,6 +43,8 @@ static class Settings {
       if (folder.Length > 0 && folder.IndexOfAny(Path.GetInvalidPathChars()) < 0 && Path.IsPathRooted(folder)) s.DataFolder = folder;
     }
     if (d.TryGetValue("EncoderProfile", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "gentle") s.EncoderProfile = "gentle";
+    if (d.TryGetValue("CaptureMethod", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "screen") s.CaptureMethod = "screen";
+    if (d.TryGetValue("FrameRateMode", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "vfr") s.FrameRateMode = "vfr";
     if (d.TryGetValue("GpuPriority", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "normal") s.GpuPriority = "normal";
     if (d.TryGetValue("MaxHeight", out v) && v != null && !(v is bool) && !(v is string)) {
       try { int h = Convert.ToInt32(v, CultureInfo.InvariantCulture); if (h >= 144 && h <= 8192) s.MaxHeight = h; } catch (Exception) { }
@@ -205,12 +211,33 @@ static class FfmpegArgs {
   // Record the window into a .mkv (which survives a crash). width and height are the window's size (its client area).
   public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv) { return Record(enc, hwnd, width, height, mkv, new AppSettings()); }
 
-  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv, AppSettings cfg) {
-    int ow, oh; bool scaled;
-    OutputSize(width, height, cfg.MaxHeight, out ow, out oh, out scaled);
-    return "-hide_banner -loglevel warning -y -nostats -progress pipe:1 -stats_period 0.25 " +
-           "-filter_complex " + Quote((scaled ? Source(hwnd, ow, oh) : Source(hwnd)) + ",fps=" + Fps + enc.Chain + "[v]") + " -map \"[v]\" " +
-           enc.Options(MaxrateKbps(ow, oh), Quality, cfg.Gentle) + " -fps_mode cfr -flush_packets 1 " + Quote(mkv);
+  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv, AppSettings cfg) { return Record(enc, hwnd, width, height, mkv, cfg, null); }
+
+  // Frame timing. cfr: the fps filter and -fps_mode cfr make a frame every 1/60 s, repeating the last one when the picture hasn't changed.
+  // vfr: no fps filter and -fps_mode passthrough: only frames that really arrived, each with its capture time (the capture time base is
+  // 1/10,000,000). ffmpeg would round those times to the 1/60 grid (the encoder time base defaults to 1/frame rate), so -enc_time_base
+  // filter keeps them exact. -r 60 is NOT used: ffmpeg refuses it with passthrough ("-r ... together with a non-CFR -fps_mode ... is
+  // contradictory"), and the capture filters already tell the encoder 60 fps, so it doesn't derive a rate from the time base.
+  public const string CfrSync = "-fps_mode cfr", VfrSync = "-fps_mode passthrough -enc_time_base filter";
+
+  // screen: when cfg.Screen, the whole monitor the window is on, by ddagrab (frames stay Direct3D 11 into the encoder, the pointer drawn);
+  // the DXGI adapter is chosen with -init_hw_device because ddagrab's output_idx counts the outputs of the device's own adapter.
+  // MaxHeight can't apply there (ddagrab can't scale, and scale_d3d11 doesn't work on this PC), so the video is the monitor's size.
+  // In vfr mode ddagrab is told dup_frames=false, so it sends only real desktop updates instead of repeating frames itself.
+  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv, AppSettings cfg, DxgiOutput screen) {
+    int ow, oh; bool scaled = false;
+    string hw = "", source;
+    if (cfg.Screen && screen != null) {
+      ow = Math.Max(2, screen.Width & ~1); oh = Math.Max(2, screen.Height & ~1);
+      hw = "-init_hw_device d3d11va=dda:" + screen.Adapter + " -filter_hw_device dda ";
+      source = "ddagrab=output_idx=" + screen.Output + ":framerate=" + Fps + ":draw_mouse=true" + (cfg.Vfr ? ":dup_frames=false" : "");
+    } else {
+      OutputSize(width, height, cfg.MaxHeight, out ow, out oh, out scaled);
+      source = scaled ? Source(hwnd, ow, oh) : Source(hwnd);
+    }
+    return "-hide_banner -loglevel warning -y -nostats -progress pipe:1 -stats_period 0.25 " + hw +
+           "-filter_complex " + Quote(source + (cfg.Vfr ? "" : ",fps=" + Fps) + enc.Chain + "[v]") + " -map \"[v]\" " +
+           enc.Options(MaxrateKbps(ow, oh), Quality, cfg.Gentle) + " " + (cfg.Vfr ? VfrSync : CfrSync) + " -flush_packets 1 " + Quote(mkv);
   }
 
   // mkv to mp4 without re-encoding. hvc1 is the HEVC tag players on Windows, Mac and the web all open.

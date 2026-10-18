@@ -129,7 +129,8 @@ class MainForm : Form {
 
   // The header chip: the active set, e.g. "HEVC · NVENC · gentle · 1080p · GPU high".
   public static string ChipText(EncoderProfile e, AppSettings c, string gpu) {
-    return (e.Codec == "hevc" ? "HEVC" : "H.264") + " · " + e.Short + " · " + c.EncoderProfile + " · " + (c.MaxHeight > 0 ? c.MaxHeight + "p" : "native") + " · GPU " + (gpu ?? c.GpuPriority);
+    return (e.Codec == "hevc" ? "HEVC" : "H.264") + " · " + e.Short + " · " + c.EncoderProfile + " · " + (c.MaxHeight > 0 && !c.Screen ? c.MaxHeight + "p" : "native") +
+           (c.Screen ? " · screen" : "") + (c.Vfr ? " · vfr" : "") + " · GPU " + (gpu ?? c.GpuPriority);
   }
 
   protected override void OnActivated(EventArgs e) { base.OnActivated(e); if (state == State.Idle && IsHandleCreated && !Quiet) ReloadWindows(); }
@@ -285,7 +286,7 @@ class MainForm : Form {
       Size sz = Native.ClientSize(w.Handle);   // what the capture records: the client area
       if (sz.Width <= 0 || sz.Height <= 0) sz = Native.FrameSize(w.Handle);
       string baseName = FileNames.Unique(folder, FileNames.BaseName(FileNames.Friendly(w.ExePath, w.Title), DateTime.Now));
-      var rec = new Recording(enc, w.Handle, sz.Width > 0 ? sz.Width : w.Width, sz.Height > 0 ? sz.Height : w.Height, folder, baseName, cfg, logsFolder);
+      var rec = new Recording(enc, w.Handle, sz.Width > 0 ? sz.Width : w.Width, sz.Height > 0 ? sz.Height : w.Height, folder, baseName, cfg, logsFolder, cfg.Screen ? Dxgi.ForWindow(w.Handle) : null);
       string error;
       bool ok = rec.Start(out error, 15000);
       Ui(delegate {
@@ -313,7 +314,7 @@ class MainForm : Form {
     if (state != State.Recording || current == null) return;
     state = State.Saving; UpdateButtons();
     var rec = current;
-    SetStatus(why ?? (rec.LagSeconds > 1.5 || rec.Behind ? "Finishing…  " + rec.LagSeconds.ToString("0") + " s of video still to write" : "Saving…"), rec.LagSeconds > 1.5 || rec.Behind ? Palette.Amber : Palette.Muted);
+    SetStatus(why ?? (rec.BehindNow ? "Finishing…  " + rec.LagSeconds.ToString("0") + " s of video still to write" : "Saving…"), rec.BehindNow ? Palette.Amber : Palette.Muted);
     var t = new Thread(delegate() {
       RecordingResult res;
       try { res = rec.Stop(); }
