@@ -4,7 +4,7 @@
 //   D2 gfxcapture + NVENC passthrough                              the same, with the encoder behind it
 //   D3 NVENC alone on a synthetic 2560x1440 picture                how fast the encoder runs while the GPU is saturated
 //   D4 ddagrab + NVENC (cfr with its own repeats, vfr without)     the Desktop Duplication path
-//   R  the Recorder itself: window or screen capture x cfr or vfr x standard or gentle
+//   R  the Recorder itself: window or screen capture x cfr or vfr x standard or quality
 // For each: real frames a second, output speed (written video time against the clock), FakeGame's presented fps without and with
 // the recording (the game's cost), GPU and encoder utilisation, ffmpeg's CPU. A summary table is printed as TABLE lines.
 // Safety: after every step the System log is searched for NVIDIA driver events (nvlddmkm); the first one stops everything.
@@ -240,9 +240,9 @@ static class Diag {
             }
           }
           if (want("R")) {
-            foreach (bool screen in new[] { false, true }) foreach (bool vfr in new[] { false, true }) foreach (bool gentle in new[] { false, true }) {
-              var cfg = new AppSettings { CaptureMethod = screen ? "screen" : "window", FrameRateMode = vfr ? "vfr" : "cfr", EncoderProfile = gentle ? "gentle" : "standard" };
-              string id = "R-" + (screen ? "screen" : "window") + "-" + (vfr ? "vfr" : "cfr") + "-" + (gentle ? "gentle" : "standard");
+            foreach (bool screen in new[] { false, true }) foreach (bool vfr in new[] { false, true }) foreach (bool qual in new[] { false, true }) {
+              var cfg = new AppSettings { CaptureMethod = screen ? "screen" : "window", FrameRateMode = vfr ? "vfr" : "cfr", EncoderProfile = qual ? "quality" : "standard" };
+              string id = "R-" + (screen ? "screen" : "window") + "-" + (vfr ? "vfr" : "cfr") + "-" + (qual ? "quality" : "standard");
               if (only != null && !only.Contains(",R,") && !only.Contains("," + id + ",")) continue;
               r = RunRecorder(g, smi, enc, cfg, id, seconds);
               r.GameBase = gameBase; Report(mode, "Recorder " + id.Substring(2), r);

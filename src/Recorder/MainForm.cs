@@ -127,7 +127,7 @@ class MainForm : Form {
     t.IsBackground = true; t.Name = "encoder check"; t.Start();
   }
 
-  // The header chip: the active set, e.g. "HEVC · NVENC · gentle · 1080p · GPU high".
+  // The header chip: the active set, e.g. "HEVC · NVENC · standard · 1080p · GPU high".
   public static string ChipText(EncoderProfile e, AppSettings c, string gpu) {
     return (e.Codec == "hevc" ? "HEVC" : "H.264") + " · " + e.Short + " · " + c.EncoderProfile + " · " + (c.MaxHeight > 0 && !c.Screen ? c.MaxHeight + "p" : "native") +
            (c.Screen ? " · screen" : "") + (c.Vfr ? " · vfr" : "") + " · GPU " + (gpu ?? c.GpuPriority);

@@ -197,8 +197,8 @@ static class RecorderTests {
     Check("capture: even width and height", rec.Contains("width=-2:height=-2"));
     Check("clock: constant 60 fps (fps filter and cfr)", rec.Contains(",fps=60,") && rec.Contains("-fps_mode cfr"));
     Check("NVENC path keeps frames on the GPU: no hwdownload, no scale, no format conversion", !rec.Contains("hwdownload") && !rec.Contains("scale_d3d11") && !rec.Contains(",scale=") && !rec.Contains("format=") && !rec.Contains("hwupload"));
-    Check("NVENC: HEVC Main, constant quality 24 in VBR with a 30000k ceiling", rec.Contains("-c:v hevc_nvenc") && rec.Contains("-profile:v main") && rec.Contains("-rc vbr -cq 24 -b:v 0 -maxrate 30000k -bufsize 60000k"));
-    Check("NVENC: preset p5, tune hq, spatial AQ, B-frames", rec.Contains("-preset p5 -tune hq") && rec.Contains("-spatial-aq 1") && rec.Contains("-bf 2"));
+    Check("NVENC: HEVC Main, constant quality 24 in VBR with a 30000k ceiling", rec.Contains("-c:v hevc_nvenc") && rec.Contains("-profile:v main") && rec.Contains("-rc vbr -cq 24 -b:v 0 -maxrate 30000k -bufsize 30000k"));
+    Check("NVENC: preset p4, tune hq, no spatial AQ, no B-frames (the light default)", rec.Contains("-preset p4 -tune hq") && rec.Contains("-spatial-aq 0") && rec.Contains("-bf 0"));
     Check("2-second keyframes (-g 120)", rec.Contains("-g 120"));
     Check("tagged as what the pixels are: tv range, BT.709 primaries and transfer, BT.601 matrix from NVENC", rec.Contains("setparams=colorspace=smpte170m:range=tv:color_primaries=bt709:color_trc=bt709"));
     Check("the file is flushed packet by packet (a crash keeps it) and is the .mkv, quoted", rec.Contains("-flush_packets 1") && rec.EndsWith("\"C:\\Rec ordings\\Game 1.mkv\""));
@@ -232,6 +232,7 @@ static class RecorderTests {
 
     UnitsM1b(tmp);
     UnitsM1c(tmp);
+    UnitsArmory(tmp);
     GpuPriorityApiTest();
     JobTest();
     if (gpu) EncoderTest();
@@ -243,15 +244,15 @@ static class RecorderTests {
     string sw = Path.Combine(tmp, "switches.json");
     File.WriteAllText(sw, "{\"ManagedBy\":\"Bifrost Suite\",\"DataFolder\":\"D:\\\\Suite\\\\Bifrost Recorder\",\"EncoderProfile\":\"gentle\",\"MaxHeight\":1080,\"GpuPriority\":\"normal\"}");
     var c = Settings.Load(sw);
-    Check("switches are read: gentle, 1080, normal, and DataFolder beside them", c.Gentle && c.MaxHeight == 1080 && c.GpuPriority == "normal" && c.DataFolder == @"D:\Suite\Bifrost Recorder", c.EncoderProfile + " " + c.MaxHeight + " " + c.GpuPriority);
+    Check("switches are read: gentle (the 0.1.1 name) means standard, 1080, normal, and DataFolder beside them", c.EncoderProfile == "standard" && !c.Quality && c.MaxHeight == 1080 && c.GpuPriority == "normal" && c.DataFolder == @"D:\Suite\Bifrost Recorder", c.EncoderProfile + " " + c.MaxHeight + " " + c.GpuPriority);
     var d = Settings.Load(Path.Combine(tmp, "absent.json"));
-    Check("no settings file: standard, native size, GPU high, no DataFolder", !d.Gentle && d.EncoderProfile == "standard" && d.MaxHeight == 0 && d.GpuPriority == "high" && d.DataFolder == null);
+    Check("no settings file: standard, native size, GPU high, no DataFolder", !d.Quality && d.EncoderProfile == "standard" && d.MaxHeight == 0 && d.GpuPriority == "high" && d.DataFolder == null);
     File.WriteAllText(sw, "{\"EncoderProfile\":\"turbo\",\"MaxHeight\":\"1080\",\"GpuPriority\":\"max\"}");
     c = Settings.Load(sw);
     Check("unusable switch values fall back to the defaults", c.EncoderProfile == "standard" && c.MaxHeight == 0 && c.GpuPriority == "high");
-    File.WriteAllText(sw, "{\"EncoderProfile\":\" GENTLE \",\"MaxHeight\":720,\"GpuPriority\":\"Normal\"}");
+    File.WriteAllText(sw, "{\"EncoderProfile\":\" QUALITY \",\"MaxHeight\":720,\"GpuPriority\":\"Normal\"}");
     c = Settings.Load(sw);
-    Check("switch values ignore case and spaces; MaxHeight 720", c.Gentle && c.MaxHeight == 720 && c.GpuPriority == "normal");
+    Check("switch values ignore case and spaces; quality; MaxHeight 720", c.Quality && c.MaxHeight == 720 && c.GpuPriority == "normal");
     File.WriteAllText(sw, "{\"MaxHeight\":100}"); Check("a MaxHeight below 144 means native", Settings.Load(sw).MaxHeight == 0);
     File.WriteAllText(sw, "{\"MaxHeight\":0}"); Check("MaxHeight 0 means native", Settings.Load(sw).MaxHeight == 0);
     File.WriteAllText(sw, "{\"MaxHeight\":true}"); Check("MaxHeight true is not a number", Settings.Load(sw).MaxHeight == 0);
@@ -261,17 +262,17 @@ static class RecorderTests {
     File.WriteAllText(sw, "{\"DataFolder\":\"D:\\\\Suite\\\\Bifrost Recorder\"}");
     Check("logs: <DataFolder>\\logs, and never the recordings folder", Settings.LogsFolder(sw, @"C:\L") == @"D:\Suite\Bifrost Recorder\logs" && Settings.LogsFolder(sw, @"C:\L") != Settings.RecordingsFolder(sw, @"C:\U") && !Settings.LogsFolder(sw, @"C:\L").StartsWith(Settings.RecordingsFolder(sw, @"C:\U")));
 
-    // the gentle NVENC profile
-    var gentle = new AppSettings { EncoderProfile = "gentle" };
-    string g = FfmpegArgs.Record(EncoderProfile.Nvenc, 1, 1920, 1080, "a.mkv", gentle);
-    Check("gentle: preset p4, tune hq, VBR cq 24, no B-frames, no spatial AQ, no lookahead, multipass off, 2 s keyframes",
+    // the two NVENC sets: standard (the light default, what 0.1.1 called gentle) and quality (the older AQ and B-frame set)
+    var quality = new AppSettings { EncoderProfile = "quality" };
+    string g = FfmpegArgs.Record(EncoderProfile.Nvenc, 1, 1920, 1080, "a.mkv", new AppSettings());
+    Check("standard: preset p4, tune hq, VBR cq 24, no B-frames, no spatial AQ, no lookahead, multipass off, 2 s keyframes",
       g.Contains("-c:v hevc_nvenc -preset p4 -tune hq -profile:v main -rc vbr -cq 24 -b:v 0") && g.Contains("-bf 0") && g.Contains("-spatial-aq 0") && g.Contains("-rc-lookahead 0") && g.Contains("-multipass disabled") && g.Contains("-g 120"), g);
-    Check("gentle: bufsize equals the ceiling (30000k), not double", g.Contains("-maxrate 30000k -bufsize 30000k"));
-    Check("gentle: no B-frame reference mode, no forced IDR", !g.Contains("-b_ref_mode") && !g.Contains("-forced-idr") && !g.Contains("-spatial-aq 1"));
-    string st = FfmpegArgs.Record(EncoderProfile.Nvenc, 1, 1920, 1080, "a.mkv", new AppSettings());
-    Check("standard is unchanged: preset p5, 2 B-frames, spatial AQ, bufsize double", st.Contains("-preset p5") && st.Contains("-bf 2 -b_ref_mode middle") && st.Contains("-spatial-aq 1") && st.Contains("-maxrate 30000k -bufsize 60000k"));
-    Check("gentle changes only the NVENC profile (AMF and QSV arguments are the same as standard)",
-      FfmpegArgs.Record(EncoderProfile.Amf, 1, 1920, 1080, "a.mkv", gentle) == FfmpegArgs.Record(EncoderProfile.Amf, 1, 1920, 1080, "a.mkv") && FfmpegArgs.Record(EncoderProfile.Qsv, 1, 1920, 1080, "a.mkv", gentle) == FfmpegArgs.Record(EncoderProfile.Qsv, 1, 1920, 1080, "a.mkv"));
+    Check("standard: bufsize equals the ceiling (30000k), not double", g.Contains("-maxrate 30000k -bufsize 30000k"));
+    Check("standard: no B-frame reference mode, no forced IDR, no spatial AQ on", !g.Contains("-b_ref_mode") && !g.Contains("-forced-idr") && !g.Contains("-spatial-aq 1"));
+    string st = FfmpegArgs.Record(EncoderProfile.Nvenc, 1, 1920, 1080, "a.mkv", quality);
+    Check("quality is the older set: preset p5, 2 B-frames, spatial AQ, bufsize double, forced IDR", st.Contains("-preset p5") && st.Contains("-bf 2 -b_ref_mode middle") && st.Contains("-spatial-aq 1") && st.Contains("-maxrate 30000k -bufsize 60000k") && st.Contains("-forced-idr 1"));
+    Check("the profile only changes NVENC (AMF and QSV arguments are the same either way)",
+      FfmpegArgs.Record(EncoderProfile.Amf, 1, 1920, 1080, "a.mkv", quality) == FfmpegArgs.Record(EncoderProfile.Amf, 1, 1920, 1080, "a.mkv") && FfmpegArgs.Record(EncoderProfile.Qsv, 1, 1920, 1080, "a.mkv", quality) == FfmpegArgs.Record(EncoderProfile.Qsv, 1, 1920, 1080, "a.mkv"));
 
     // MaxHeight: the capture filter scales on the GPU (resize_mode=scale_aspect with an explicit size)
     int w, h; bool scaled;
@@ -291,7 +292,7 @@ static class RecorderTests {
 
     // the header chip
     Check("chip: standard native", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings(), null) == "HEVC · NVENC · standard · native · GPU high", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings(), null));
-    Check("chip: gentle 1080p GPU normal", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings { EncoderProfile = "gentle", MaxHeight = 1080, GpuPriority = "normal" }, null) == "HEVC · NVENC · gentle · 1080p · GPU normal");
+    Check("chip: quality 1080p GPU normal", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings { EncoderProfile = "quality", MaxHeight = 1080, GpuPriority = "normal" }, null) == "HEVC · NVENC · quality · 1080p · GPU normal");
     Check("chip: shows what the GPU actually granted once known", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings(), "above-normal") == "HEVC · NVENC · standard · native · GPU above-normal");
     Check("chip: software encoder", MainForm.ChipText(EncoderProfile.Software, new AppSettings(), null).StartsWith("H.264 · x264 CPU · standard"));
 
@@ -392,12 +393,12 @@ static class RecorderTests {
     string s3 = FfmpegArgs.Record(EncoderProfile.Software, 9, 1280, 720, "a.mkv", screenCfr, onIntel);
     Check("screen: the adapter index follows the monitor's adapter (Intel is adapter 1, its own output 0), and the software encoder downloads after ddagrab", s3.Contains("d3d11va=dda:1 ") && s3.Contains("ddagrab=output_idx=0:") && s3.Contains("hwdownload"), s3);
     Check("screen capture asked for but no monitor known: the window capture arguments are used", FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", screenCfr, null).Contains("gfxcapture=hwnd=9"));
-    Check("gentle works with screen and vfr too", FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", new AppSettings { CaptureMethod = "screen", FrameRateMode = "vfr", EncoderProfile = "gentle" }, onNvidia).Contains("-preset p4 -tune hq"));
+    Check("the quality set works with screen and vfr too", FfmpegArgs.Record(EncoderProfile.Nvenc, 9, 1280, 720, "a.mkv", new AppSettings { CaptureMethod = "screen", FrameRateMode = "vfr", EncoderProfile = "quality" }, onNvidia).Contains("-preset p5 -tune hq"));
 
     // the chip
     Check("chip: screen", MainForm.ChipText(EncoderProfile.Nvenc, screenCfr, null) == "HEVC · NVENC · standard · native · screen · GPU high", MainForm.ChipText(EncoderProfile.Nvenc, screenCfr, null));
     Check("chip: vfr", MainForm.ChipText(EncoderProfile.Nvenc, windowVfr, null) == "HEVC · NVENC · standard · native · vfr · GPU high");
-    Check("chip: gentle, screen, vfr and GPU normal (MaxHeight shows native with screen capture)", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings { EncoderProfile = "gentle", MaxHeight = 1080, CaptureMethod = "screen", FrameRateMode = "vfr", GpuPriority = "normal" }, null) == "HEVC · NVENC · gentle · native · screen · vfr · GPU normal");
+    Check("chip: quality, screen, vfr and GPU normal (MaxHeight shows native with screen capture)", MainForm.ChipText(EncoderProfile.Nvenc, new AppSettings { EncoderProfile = "quality", MaxHeight = 1080, CaptureMethod = "screen", FrameRateMode = "vfr", GpuPriority = "normal" }, null) == "HEVC · NVENC · quality · native · screen · vfr · GPU normal");
 
     // vendors, and refusing a monitor the encoder can't read before anything starts
     Check("encoder vendors: NVENC 10DE, AMF 1002, QSV 8086, software none", DxgiOutput.VendorOf(EncoderProfile.Nvenc) == 0x10DE && DxgiOutput.VendorOf(EncoderProfile.Amf) == 0x1002 && DxgiOutput.VendorOf(EncoderProfile.Qsv) == 0x8086 && DxgiOutput.VendorOf(EncoderProfile.Software) == 0);
@@ -476,6 +477,114 @@ static class RecorderTests {
     if (a.Count != b.Count) return false;
     for (int i = 0; i < a.Count; i++) if (Math.Abs(a[i] - b[i]) > 0.0011) return false;
     return true;
+  }
+
+  // ------------------------------------------------------------------------------------------------ the Armory upload client, against a stand-in on this PC
+  // The key used here is made up by the test; nothing in the output may contain it, and the real site is never contacted.
+  static void UnitsArmory(string tmp) {
+    string key = "test-key-" + Guid.NewGuid().ToString("N");
+    var leaks = new List<string>();      // every message and note the client produced: none may hold the key
+    ArmoryClient.TestLoopbackHttp = true;
+    try {
+      // what counts as a usable server and storage address
+      Check("server: https is fine", ArmoryClient.ServerProblem("https://taskforcehalberd.org") == null);
+      Check("server: plain http only for this PC", ArmoryClient.ServerProblem("http://127.0.0.1:8080") == null && ArmoryClient.ServerProblem("http://localhost:1") == null && ArmoryClient.ServerProblem("http://taskforcehalberd.org") != null && ArmoryClient.ServerProblem("http://192.168.1.5") != null);
+      Check("server: not a web address, empty, or with a user name is refused", ArmoryClient.ServerProblem("ftp://x") != null && ArmoryClient.ServerProblem("") != null && ArmoryClient.ServerProblem("not a url") != null && ArmoryClient.ServerProblem("https://user:pw@taskforcehalberd.org") != null);
+      bool threw = false; try { new ArmoryClient("http://example.com", "k"); } catch (ArmoryException) { threw = true; }
+      Check("a client for an http team server that is not on this PC cannot be made (the key would travel unprotected)", threw);
+      threw = false; try { new ArmoryClient("https://taskforcehalberd.org", ""); } catch (ArmoryException) { threw = true; }
+      Check("a client without a key cannot be made", threw);
+      ArmoryClient.TestLoopbackHttp = false;
+      Check("storage: signed addresses must be https (http on this PC only in the tests)", ArmoryClient.StorageProblem("https://videos.taskforcehalberd.org:9443/x?sig=1") == null && ArmoryClient.StorageProblem("http://127.0.0.1:1/x") != null && ArmoryClient.StorageProblem("http://videos.example.com/x") != null && ArmoryClient.StorageProblem("ftp://x/y") != null && ArmoryClient.StorageProblem("https://u:p@videos.example.com/x") != null);
+      ArmoryClient.TestLoopbackHttp = true;
+      Check("Usable: needs a key and a good server", ArmoryClient.Usable(new AppSettings { TeamServer = "https://taskforcehalberd.org", TeamKey = "k" }) && !ArmoryClient.Usable(new AppSettings { TeamServer = "https://taskforcehalberd.org" }) && !ArmoryClient.Usable(new AppSettings { TeamServer = "http://example.com", TeamKey = "k" }) && !ArmoryClient.Usable(new AppSettings()));
+      var withKey = new AppSettings { TeamServer = "https://x", TeamKey = key };
+      Check("the settings object never prints its key", !withKey.ToString().Contains(key));
+      string sf = Path.Combine(tmp, "armory-settings.json");
+      File.WriteAllText(sf, "{\"TeamServer\":\"https://taskforcehalberd.org/\",\"TeamKey\":\"" + key + "\",\"TeamMember\":\"Congo\",\"DataFolder\":\"D:\\\\S\\\\Rec\"}");
+      var loaded = Settings.Load(sf);
+      Check("TeamServer (no trailing slash) and TeamKey are read from the settings file", loaded.TeamServer == "https://taskforcehalberd.org" && loaded.TeamKey == key && loaded.DataFolder == @"D:\S\Rec");
+
+      // a recording file to send: 5.5 MiB of recognisable bytes, in 1 MiB parts (6 parts)
+      string file = Path.Combine(tmp, "upload-test.mp4");
+      var data = new byte[5 * 1024 * 1024 + 512 * 1024]; new Random(3).NextBytes(data); File.WriteAllBytes(file, data);
+
+      using (var s = new ArmoryStandIn(key)) {
+        var client = new ArmoryClient(s.Url, key);
+        var me = client.GetMe();
+        Check("GET /me: connected, the size limit, the formats and the 60 days", me.Connected && me.MaxBytes == 20L * 1024 * 1024 * 1024 && me.Formats.Length == 2 && me.RetentionDays == 60 && me.Name == "Test Member");
+        List<NamedItem> folders, cats; client.GetOptions(out folders, out cats);
+        Check("GET /options: the folders and categories to pick from", folders.Count == 2 && folders[0].Id == "f1" && folders[0].Name == "Operations" && cats.Count == 2 && cats[1].Name == "Bug");
+
+        // the happy path
+        var job = new UploadJob { Client = client, File = file, FolderId = "f1", CategoryId = "c2", Title = "My clip", DurationSeconds = 123, RetryDelayMs = 30 };
+        long lastSent = 0, lastTotal = 0; bool monotonic = true;
+        job.Progress += delegate(long sent, long total) { lock (leaks) { if (sent < lastSent - (long)s.PartSize) monotonic = false; lastSent = sent; lastTotal = total; } };
+        job.Note += delegate(string n) { lock (leaks) leaks.Add(n); };
+        s.PutDelayMs = 150;
+        var receipt = job.Run();
+        s.PutDelayMs = 0;
+        Check("upload: every part arrived with the right size and complete answered the receipt", receipt.ContainsKey("id") && s.ReceivedParts() == 6 && s.ReceivedBytes() == data.Length && s.Completes == 1, s.ReceivedParts() + " parts, " + s.ReceivedBytes() + " bytes");
+        Check("upload: started once with the folder, category, file name, size, title, duration and accept_terms true", s.Starts == 1 && s.LastStartBody.Contains("\"folder_id\":\"f1\"") && s.LastStartBody.Contains("\"category_id\":\"c2\"") && s.LastStartBody.Contains("\"filename\":\"upload-test.mp4\"") && s.LastStartBody.Contains("\"size\":" + data.Length) && s.LastStartBody.Contains("\"title\":\"My clip\"") && s.LastStartBody.Contains("\"duration\":123") && s.LastStartBody.Contains("\"accept_terms\":true"), s.LastStartBody);
+        Check("upload: up to four parts at a time (saw " + s.MaxConcurrentPuts + ")", s.MaxConcurrentPuts >= 2 && s.MaxConcurrentPuts <= 4, s.MaxConcurrentPuts.ToString());
+        Check("upload: progress reached the whole file", lastTotal == data.Length && lastSent == data.Length && monotonic, lastSent + " of " + lastTotal);
+        Check("upload: the key went to the team server on every API call and never to the bucket", !s.KeyOnBucket && !s.KeyMissingOnApi);
+        Check("upload: the signed addresses were asked for in one batch, not one by one", s.PartNumberRequests.Count == 1 && s.PartNumberRequests[0] == "1 2 3 4 5 6", string.Join(" | ", s.PartNumberRequests.ToArray()));
+        Check("upload: nothing was aborted", s.Deletes == 0);
+
+        // a part that fails once is tried again with a fresh address
+        s.FailFirstPutOfPart = 3; s.PartNumberRequests.Clear();
+        var job2 = new UploadJob { Client = client, File = file, FolderId = "f1", CategoryId = "c1", RetryDelayMs = 30 };
+        job2.Note += delegate(string n) { lock (leaks) leaks.Add(n); };
+        var r2 = job2.Run();
+        Check("retry: part 3 failed once (500), was asked for again with a fresh single address, and the upload completed", r2.ContainsKey("id") && s.PartNumberRequests.Contains("3") && s.ReceivedParts() == 6, string.Join(" | ", s.PartNumberRequests.ToArray()));
+        s.FailFirstPutOfPart = 0;
+
+        // a redirect from the bucket is never followed
+        s.RedirectPartTo = 2; s.Deletes = 0;
+        var job3 = new UploadJob { Client = client, File = file, FolderId = "f1", CategoryId = "c1", RetryDelayMs = 10, Attempts = 2 };
+        job3.Note += delegate(string n) { lock (leaks) leaks.Add(n); };
+        string msg3 = null;
+        try { job3.Run(); } catch (ArmoryException ex) { msg3 = ex.Message; lock (leaks) leaks.Add(ex.Message); }
+        Check("redirect: not followed (nothing reached /evil), the upload failed with a clear message and was aborted at the server", msg3 != null && s.EvilHits == 0 && msg3.Contains("redirect") && s.Deletes == 1, msg3 + " evil=" + s.EvilHits + " deletes=" + s.Deletes);
+        s.RedirectPartTo = 0;
+
+        // a cancel ends it at once and aborts it at the server
+        s.PutDelayMs = 700; s.Deletes = 0;
+        var job4 = new UploadJob { Client = client, File = file, FolderId = "f1", CategoryId = "c1", RetryDelayMs = 10 };
+        bool cancelled = false; var sw = Stopwatch.StartNew();
+        var th = new Thread(delegate() { try { job4.Run(); } catch (OperationCanceledException) { cancelled = true; } catch (Exception) { } });
+        th.Start(); Thread.Sleep(300); job4.Cancel(); th.Join(10000);
+        Check("cancel: the upload stopped with a cancellation in well under the part time, and DELETE was sent", cancelled && s.Deletes == 1 && sw.Elapsed.TotalSeconds < 5, "cancelled=" + cancelled + " deletes=" + s.Deletes + " " + sw.Elapsed.TotalSeconds.ToString("0.0") + " s");
+        s.PutDelayMs = 0;
+
+        // the site refusing the file at the end (not a video): its reason is shown, and the upload is aborted
+        s.CompleteError = "That file isn't a video."; s.Deletes = 0;
+        var job5 = new UploadJob { Client = client, File = file, FolderId = "f1", CategoryId = "c1", RetryDelayMs = 10 };
+        string msg5 = null;
+        try { job5.Run(); } catch (ArmoryException ex) { msg5 = ex.Message; lock (leaks) leaks.Add(ex.Message); }
+        Check("complete refused: the site's own reason is the message, and DELETE was sent", msg5 == "That file isn't a video." && s.Deletes == 1, msg5);
+        s.CompleteError = null;
+
+        // a wrong key
+        var wrong = new ArmoryClient(s.Url, "wrong-" + Guid.NewGuid().ToString("N"));
+        string msg6 = null;
+        try { wrong.GetMe(); } catch (ArmoryException ex) { msg6 = ex.Message; lock (leaks) leaks.Add(ex.Message); }
+        Check("a wrong key: a plain message, status 401", msg6 != null && msg6.Contains("didn't accept the key"), msg6);
+        s.NotConnected = true;
+        Check("the storage not connected is reported by /me", !client.GetMe().Connected);
+        s.NotConnected = false;
+      }
+
+      // nothing is listening: a clear message, no hang
+      var dead = new ArmoryClient("http://127.0.0.1:9", key) { Timeout = 3000 };
+      string msg7 = null;
+      try { dead.GetMe(); } catch (ArmoryException ex) { msg7 = ex.Message; lock (leaks) leaks.Add(ex.Message); }
+      Check("no server: 'can't be reached', not a crash", msg7 != null && msg7.Contains("can't be reached"), msg7);
+
+      bool leaked = false; foreach (string l in leaks) if (l.Contains(key)) leaked = true;
+      Check("the key appears in no message and no note the client produced (" + leaks.Count + " collected)", !leaked && leaks.Count > 0);
+    } finally { ArmoryClient.TestLoopbackHttp = false; }
   }
 
   // The GPU-priority call, tried on a child that does no GPU work at all (ffmpeg making a test pattern for nothing): what the PC answers
@@ -607,18 +716,18 @@ static class RecorderTests {
       Check("the closed window's recording is a good .mp4 of about 4 seconds, not forced", closed != null && closed.Ok && !closed.Forced && closed.Seconds > 2.5 && closed.Seconds < 6, closed == null ? "null" : closed.Message + " " + closed.Seconds.ToString("0.0"));
       Check("closing test: no .mkv left", Directory.GetFiles(Path.Combine(outDir, "Recordings"), "*.mkv").Length == 0);
 
-      // M1b: the switches through the window: gentle encoder, scaled to 360 high, GPU priority left at normal
-      Console.WriteLine("-- M1b switches: gentle encoder, 360p, GPU priority normal");
-      var swin = TestWindow.Open(Scene.Simple, 1280, 720, true, WindowPrefix + ": gentle and scaled");
-      Invoke(form, delegate { form.Config = new AppSettings { EncoderProfile = "gentle", MaxHeight = 360, GpuPriority = "normal" }; form.ReloadWindows(); form.SelectHwnd(swin.Handle); });
+      // M1b: the switches through the window: quality encoder, scaled to 360 high, GPU priority left at normal
+      Console.WriteLine("-- M1b switches: quality encoder, 360p, GPU priority normal");
+      var swin = TestWindow.Open(Scene.Simple, 1280, 720, true, WindowPrefix + ": quality and scaled");
+      Invoke(form, delegate { form.Config = new AppSettings { EncoderProfile = "quality", MaxHeight = 360, GpuPriority = "normal" }; form.ReloadWindows(); form.SelectHwnd(swin.Handle); });
       form.LastResult = null;
       Invoke(form, delegate { form.PressRecord(); });
       Check("switches: recording started", WaitFor(delegate { return form.Mode == MainForm.State.Recording; }, 30000, "recording"), form.StatusText);
       var srec = form.Current;
       Thread.Sleep(5000);
-      Check("switches: the chip shows gentle, 360p and GPU normal", form.ChipTextNow == "HEVC · NVENC · gentle · 360p · GPU normal", form.ChipTextNow);
-      Check("switches: ffmpeg was started with the gentle options and a 640x360 capture", srec.Command.Contains("-preset p4") && srec.Command.Contains("-bf 0") && srec.Command.Contains("width=640:height=360") && srec.Command.Contains("resize_mode=scale_aspect"), srec.Command);
-      Shot(form.Handle, "02-chip-gentle-scaled.png", true);
+      Check("switches: the chip shows quality, 360p and GPU normal", form.ChipTextNow == "HEVC · NVENC · quality · 360p · GPU normal", form.ChipTextNow);
+      Check("switches: ffmpeg was started with the quality options and a 640x360 capture", srec.Command.Contains("-preset p5") && srec.Command.Contains("-bf 2") && srec.Command.Contains("width=640:height=360") && srec.Command.Contains("resize_mode=scale_aspect"), srec.Command);
+      Shot(form.Handle, "02-chip-quality-scaled.png", true);
       string slog = srec.LogPath;
       Invoke(form, delegate { form.PressRecord(); });
       Check("switches: Stop saves", WaitFor(delegate { return form.Mode == MainForm.State.Idle && form.LastResult != null; }, 60000, "saved"), form.StatusText);
@@ -638,7 +747,7 @@ static class RecorderTests {
         }
       }
       string stext = slog != null && File.Exists(slog) ? File.ReadAllText(slog) : "";
-      Check("switches: the log records the settings, the scaling and that GPU priority was left at normal", stext.Contains("settings: EncoderProfile=gentle MaxHeight=360 GpuPriority=normal") && stext.Contains("(scaled by MaxHeight)") && stext.Contains("left at NORMAL"), slog);
+      Check("switches: the log records the settings, the scaling and that GPU priority was left at normal", stext.Contains("settings: EncoderProfile=quality MaxHeight=360 GpuPriority=normal") && stext.Contains("(scaled by MaxHeight)") && stext.Contains("left at NORMAL"), slog);
       Invoke(form, delegate { form.Config = new AppSettings(); });
       swin.CloseWindow();
 
@@ -929,7 +1038,7 @@ static class RecorderTests {
   static int Bench(string[] a) {
     var scene = (Scene)Enum.Parse(typeof(Scene), a[1]);
     int w = int.Parse(a[2]), h = int.Parse(a[3]), secs = int.Parse(a[4]);
-    // --bench <Scene> <width> <height> <seconds> [standard|gentle] [MaxHeight] [high|normal]
+    // --bench <Scene> <width> <height> <seconds> [standard|quality] [MaxHeight] [high|normal]
     var cfg = new AppSettings { EncoderProfile = a.Length > 5 ? a[5] : "standard", MaxHeight = a.Length > 6 ? int.Parse(a[6]) : 0, GpuPriority = a.Length > 7 ? a[7] : "high" };
     Directory.CreateDirectory(Path.Combine(build, "bench"));
     var win = TestWindow.Open(scene, w, h, false, WindowPrefix + ": bench " + scene);

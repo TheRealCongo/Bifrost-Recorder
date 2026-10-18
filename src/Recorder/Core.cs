@@ -8,15 +8,16 @@ using System.Text;
 using System.Web.Script.Serialization;
 
 // What BifrostRecorder.settings.json holds. DataFolder is Bifrost Suite's; the other three are experiment switches, not shown in
-// the window (the header chip shows the active set): EncoderProfile standard | gentle, MaxHeight 0 (native) | 720 | 1080 ..., GpuPriority high | normal.
+// the window (the header chip shows the active set): EncoderProfile standard (the light default) | quality (the older set; "gentle" in an older settings file means standard), MaxHeight 0 (native) | 720 | 1080 ... (scaling is costly under a game),, GpuPriority high | normal.
 class AppSettings {
   public string DataFolder;                  // null when the file gave none
+  public string TeamServer, TeamKey;         // the Armory, from the same file Bifrost Suite writes for Planner; the key is never shown, logged or written by the Recorder
   public string EncoderProfile = "standard";
   public int MaxHeight;                      // 0 = record at the window's own size
   public string GpuPriority = "high";
   public string CaptureMethod = "window";    // window (gfxcapture) | screen (ddagrab, the whole monitor the window is on)
   public string FrameRateMode = "cfr";       // cfr (a frame every 1/60 s, repeats filling gaps) | vfr (only real frames, with their real times)
-  public bool Gentle { get { return EncoderProfile == "gentle"; } }
+  public bool Quality { get { return EncoderProfile == "quality"; } }   // the older AQ and B-frame set, for recording what isn't a game
   public bool Screen { get { return CaptureMethod == "screen"; } }
   public bool Vfr { get { return FrameRateMode == "vfr"; } }
 }
@@ -42,7 +43,9 @@ static class Settings {
       string folder = ((string)v).Trim();
       if (folder.Length > 0 && folder.IndexOfAny(Path.GetInvalidPathChars()) < 0 && Path.IsPathRooted(folder)) s.DataFolder = folder;
     }
-    if (d.TryGetValue("EncoderProfile", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "gentle") s.EncoderProfile = "gentle";
+    if (d.TryGetValue("EncoderProfile", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "quality") s.EncoderProfile = "quality";   // "gentle" (the 0.1.1 name for the light set) and anything else is standard
+    if (d.TryGetValue("TeamServer", out v) && v is string) s.TeamServer = ((string)v).Trim().TrimEnd('/');
+    if (d.TryGetValue("TeamKey", out v) && v is string && ((string)v).Trim().Length > 0) s.TeamKey = ((string)v).Trim();
     if (d.TryGetValue("CaptureMethod", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "screen") s.CaptureMethod = "screen";
     if (d.TryGetValue("FrameRateMode", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "vfr") s.FrameRateMode = "vfr";
     if (d.TryGetValue("GpuPriority", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "normal") s.GpuPriority = "normal";
@@ -127,15 +130,17 @@ class EncoderProfile {
   const string TagsCpu = "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709";
 
   // The options go after "-map [v]". maxrate is in kilobits a second, scaled to the picture by FfmpegArgs.MaxrateKbps.
-  // gentle (NVENC only) asks the GPU for less: preset p4, no B-frames, no spatial AQ, no lookahead, a bufsize equal to the ceiling.
-  public string Options(int maxrateKbps, int quality, bool gentle) {
+  // NVENC has two sets. The default ("standard") asks little of the GPU: preset p4, no B-frames, no spatial AQ (it runs on the GPU's CUDA cores,
+  // which a game starves: measured 56 fps without it against 28 with it under Arma), no lookahead, a bufsize equal to the ceiling. "quality" is the
+  // older set for recording something that isn't a game: preset p5, spatial AQ, 2 B-frames with middle references, double bufsize, forced IDR keyframes.
+  public string Options(int maxrateKbps, int quality, bool qualitySet) {
     string max = maxrateKbps + "k", buf = (maxrateKbps * 2) + "k", q = quality.ToString(CultureInfo.InvariantCulture);
     switch (Name) {
       case "hevc_nvenc":
-        if (gentle)
+        if (!qualitySet)
           return "-c:v hevc_nvenc -preset p4 -tune hq -profile:v main -rc vbr -cq " + q + " -b:v 0 -maxrate " + max + " -bufsize " + max +
                  " -bf 0 -spatial-aq 0 -rc-lookahead 0 -multipass disabled -g 120";
-        // Constant quality with a ceiling: VBR with -cq and no average target, capped by maxrate. Two B-frames, spatial AQ.
+        // Constant quality with a ceiling: VBR with -cq and no average target, capped by maxrate.
         return "-c:v hevc_nvenc -preset p5 -tune hq -profile:v main -rc vbr -cq " + q + " -b:v 0 -maxrate " + max + " -bufsize " + buf +
                " -spatial-aq 1 -bf 2 -b_ref_mode middle -g 120 -forced-idr 1";
       case "hevc_amf":   // UNTESTED: no AMD GPU here
@@ -237,7 +242,7 @@ static class FfmpegArgs {
     }
     return "-hide_banner -loglevel warning -y -nostats -progress pipe:1 -stats_period 0.25 " + hw +
            "-filter_complex " + Quote(source + (cfg.Vfr ? "" : ",fps=" + Fps) + enc.Chain + "[v]") + " -map \"[v]\" " +
-           enc.Options(MaxrateKbps(ow, oh), Quality, cfg.Gentle) + " " + (cfg.Vfr ? VfrSync : CfrSync) + " -flush_packets 1 " + Quote(mkv);
+           enc.Options(MaxrateKbps(ow, oh), Quality, cfg.Quality) + " " + (cfg.Vfr ? VfrSync : CfrSync) + " -flush_packets 1 " + Quote(mkv);
   }
 
   // mkv to mp4 without re-encoding. hvc1 is the HEVC tag players on Windows, Mac and the web all open.

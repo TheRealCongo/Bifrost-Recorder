@@ -21,8 +21,8 @@ $assemblyVersion = $numeric -join '.'
 $refs = "System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll", "System.Web.Extensions.dll" |
         ForEach-Object { "/reference:" + (Join-Path $fw $_) }
 
-function Compile([string]$target, [string]$file, [string[]]$sources) {
-  $cscArgs = @("/nologo", "/optimize+", "/codepage:65001", "/target:$target", "/out:$file") + $refs + $sources
+function Compile([string]$target, [string]$file, [string[]]$sources, [string[]]$extra = @()) {
+  $cscArgs = @("/nologo", "/optimize+", "/codepage:65001", "/target:$target", "/out:$file") + $refs + $extra + $sources
   $output = & $csc @cscArgs 2>&1
   if ($LASTEXITCODE -ne 0) { $output | ForEach-Object { Write-Host $_ }; throw "Compile failed: $file" }
   Write-Host "Built $file"
@@ -45,7 +45,7 @@ using System.Reflection;
 
 $app = Get-ChildItem (Join-Path $root "src\Recorder") -Filter *.cs | ForEach-Object FullName
 $versionFile = VersionFile "Bifrost Recorder" "Records a game or program, light on your PC"
-try { Compile "winexe" (Join-Path $build "BifrostRecorder.exe") ($app + $versionFile) }   # windows subsystem: it never has a console
+try { Compile "winexe" (Join-Path $build "BifrostRecorder.exe") ($app + $versionFile) @(("/win32icon:" + (Join-Path $root "assets\icon.ico"))) }   # windows subsystem: it never has a console
 finally { Remove-Item $versionFile -ErrorAction SilentlyContinue }
 
 # ffmpeg, from the copy Bifrost Studio ships. Only files that are missing or differ are copied (the DLLs are 230 MB).
@@ -62,7 +62,7 @@ if (-not $SkipFfmpeg) {
 }
 
 # Test only: the same program code (without its Main) plus the tests and their animated window.
-$testSources = ($app | Where-Object { (Split-Path $_ -Leaf) -ne "Program.cs" }) + (Join-Path $root "tests\RecorderTests.cs") + (Join-Path $root "tests\TestWindow.cs") + (Join-Path $root "tests\Diag.cs")
+$testSources = ($app | Where-Object { (Split-Path $_ -Leaf) -ne "Program.cs" }) + (Join-Path $root "tests\RecorderTests.cs") + (Join-Path $root "tests\TestWindow.cs") + (Join-Path $root "tests\Diag.cs") + (Join-Path $root "tests\ArmoryStandIn.cs")
 Compile "exe" (Join-Path $build "RecorderTests.exe") $testSources
 
 # FakeGame: a borderless fullscreen Direct3D 11 flip-model window that stands in for a game in the tests (test only).
