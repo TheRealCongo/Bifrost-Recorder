@@ -1,5 +1,15 @@
 # Bifrost Recorder changelog
 
+## 0.2.0
+- Records with OBS Studio's engine (libobs, from OBS Studio 32.2.2, unchanged). Bifrost Recorder is now open source (GPL-2.0-or-later) and is not made or endorsed by the OBS Project.
+- Game capture is the new default: OBS's own hook copies each frame inside the game, the way OBS and Medal record games, instead of competing with the game for the GPU. Programs that can't be hooked fall back to window capture by themselves after a few seconds.
+- Sound: the chosen program's own sound (or everything the PC plays), and the microphone if you turn it on. With the mic on, recordings have three tracks: Mix, Game and Mic.
+- Settings: Capture (game capture, this window, or the whole screen), Sound and Microphone are new; Frame rate is gone (recordings are always a steady 60 fps). The whole-screen choice now follows Resolution too.
+- Recordings are written as MP4 from the start, in a form that still plays if the PC crashes; there is no more .mkv step on Stop.
+- The recording engine starts when the Recorder opens (a second or two; Record is ready after it), so starting a recording is quick. Open the Recorder before the game for the smoothest start.
+- Windows on an HDR monitor record with their true colours.
+- The ffmpeg folder is gone; the program now carries the OBS files it uses, their licences and THIRD-PARTY-NOTICES.md.
+
 ## 0.1.3
 - A Settings window (the Settings button by Refresh): Light or Quality encoder, Native, 1080p or 720p, This window or the whole screen, steady 60 fps or only real frames, GPU priority. Changes apply to the next recording and are saved at once; the header shows what is active.
 - Appearance in Settings, as in the other Bifrost apps: five themes (Console, Midnight, OD green, Paper, High contrast) and an accent (the theme's own, a swatch or a hue slider), applied live. The app icon keeps its own colours.

@@ -1,7 +1,61 @@
 # Bifrost Recorder: progress
 
-Native Windows exe (C# WinForms, C# 5, compiled with Windows' own `csc.exe`, no NuGet), recording one window with the bundled ffmpeg.
-Built like Bifrost Suite: `build.ps1`. Repo is local only (no remote, nothing pushed).
+Native Windows exe (C# WinForms, C# 5, compiled with Windows' own `csc.exe`, no NuGet). Since 0.2.0 it records with libobs, the engine
+of OBS Studio (32.2.2's official release files, unmodified). Built like Bifrost Suite: `build.ps1`. Public on GitHub since 2026-10-18:
+TheRealCongo/Bifrost-Recorder, GPL-2.0-or-later.
+
+## M2: the OBS engine (0.2.0, 2026-10-18)
+
+**Why.** Under Arma's GPU load any capture from outside the game competes with it for the GPU (M1b/M1c live tests). OBS and Medal record
+games smoothly because a hook copies each frame inside the game's own frame. Congo chose to open-source the Recorder so it can run OBS's
+engine and its signed hook under the Recorder's own window (Oct 18: "I'll open source the Bifrost Recorder and we can just use the OBS
+hooks"). BattlEye trusts OBS's hook by its signature, so the hook is used exactly as OBS ships it, never rebuilt or changed.
+
+**What changed.**
+- `Obs.cs`: P/Invoke to obs.dll (only the functions used), the engine started once at the first Record on the window's thread (libobs
+  wants a single-threaded COM apartment there), libobs's log caught into the recording's log, the encoder picked from what libobs registered.
+- `Capture.cs`: a recording is a libobs scene with one capture (game_capture, window_capture with Windows Graphics Capture, or
+  monitor_capture), the program's sound (wasapi_process_output_capture, or wasapi_output_capture for everything) and the mic
+  (wasapi_input_capture), NVENC HEVC (CQVBR 24, the light or quality set; AMF, QSV, x264 after it), AAC tracks, and OBS's hybrid MP4
+  output (crash-safe, finished on Stop; no MKV, no remux). Telemetry is libobs's own counters: frames the GPU drew late, frames the encoder
+  skipped. Game capture that can't hook falls back to window capture after 6 s (`CaptureChoice`).
+- Settings: Capture (game / window / screen), Sound (program / PC), Microphone (off / on, own track) are new; Frame rate is gone.
+- `build.ps1`: downloads OBS Studio 32.2.2's Windows zip and sources once into `deps\`, checks both against their published SHA-256,
+  copies only what is used, and refuses to finish unless the game capture hook and its injector are validly signed. The ffmpeg folder is gone.
+- Licences: LICENSE (GPL-2.0), THIRD-PARTY-NOTICES.md and `licenses\` (OBS's own and obs-deps 2026-07-15's licence texts, GPL-3.0 for
+  ffmpeg, which OBS builds `--enable-gpl --enable-version3`) travel with every build.
+
+**Findings (libobs from C#, all measured here).**
+- libobs needs `/` in the paths it is given: its shaders `#include` each other and it finds their folder by the last `/` only
+  (`cf-lexer.c`). With `\` every shader failed to parse and `obs_reset_video` returned -1 with no message at all.
+- libobs looks for its helper programs (obs-nvenc-test.exe and the like) next to the running exe, not next to obs.dll, so obs.dll and its
+  libraries sit beside BifrostRecorder.exe; plugins and data are in `obs\`.
+- Giving obs_startup no module config path keeps win-capture from fetching compatibility updates from obsproject.com and from keeping
+  files. Its hook still works: it then loads graphics-hook64.dll from the Recorder's own folder instead of copying it to
+  C:\ProgramData\obs-studio-hook, and no Vulkan layer is registered (Vulkan-only games fall back to window capture).
+- libobs never captures a window of its own process (`window-helpers.c`), so the tests' recorded windows run in child processes.
+- libobs's SDR white level is 0 until `obs_set_video_levels` is called (OBS Studio's frontend sets 300 and 1000 nits). Windows hands a
+  window or screen on an HDR monitor over as 16-bit float, libobs tone-maps it with 80 / white level, and with 0 every window recording
+  was black (this PC's primary monitor runs HDR). Game capture of an SDR game was unaffected. The Recorder now sets OBS's levels at start.
+- win-capture runs get-graphics-offsets32/64 at plugin load and reads their pipes to the end. A process started meanwhile with handle
+  inheritance (every .NET Process.Start) holds the pipe open until it exits, and the first game capture waits for it (409 s in one run).
+- OBS's MP4 names each track in its udta `name` box; ffprobe shows it as the tag `name` (Mix, Game, Mic), not `title`.
+- The official libobs-d3d11 tries to raise the process's GPU priority itself (REALTIME without HAGS, HIGH with it); without
+  administrator rights it is refused ("not admin?") and nothing changes.
+- Window and screen capture ask Windows for SDR pictures (`force_sdr`); left to libobs, an HDR desktop's float pictures are tone-mapped
+  at libobs's 300-nit white, not the monitor's (480 here): cyan came back 136,209,206. With it, colours are within 2/255.
+
+**Game capture under a GPU-bound game (the diag, `RecorderTests.exe --diag windowed 15`, 2026-10-18 02:00).** FakeGame at 1920x1080,
+vsync off, its load tuned until the GPU sat at 99% for 60 fps. Recording it 15 s with game capture: FakeGame kept 59.7 fps (59.7 alone),
+900 different pictures in 900 frames, 0 skipped by the encoder, 5 drawn late, "Keeping up", encoder 30%. This is the case window capture
+starved in (M1b). The window capture half did not run: the safety check stopped the run (next point).
+
+**A driver reset at engine start.** nvlddmkm event 153 at 02:00:28, the moment libobs finished starting, which in that run happened with
+FakeGame already holding the GPU at 99% and took about 60 s (1.5 s otherwise). Starting libobs opens a test session on every GPU encoder;
+the recording's own NVENC session and 15 s of encoding under the same load caused no further event. This matches M1's finding that new
+encoder sessions next to a saturated GPU are what this PC's driver dislikes (it logged 30 such events in 30 days, 18 since the evening
+before, most during test runs). So the Recorder now starts the engine when it opens, on a thread of its own (the window never freezes,
+Record waits until it is ready), not at the first Record while the game runs; the diag starts the engine before FakeGame. Not re-run.
 
 
 ## M1b (after the M1 live test of 2026-10-17)

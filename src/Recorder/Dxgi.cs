@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Which DXGI output (monitor, on which graphics adapter) a window is on, for screen capture (ddagrab). Enumeration only: it creates a
-// DXGI factory and asks it questions; no device, no GPU work. C# 5 for Windows' own compiler.
+// The monitors and graphics adapters as DXGI lists them: which monitor a window is on (screen capture records it, by its device name), and
+// which GPU maker's encoder to name before the engine has started. Enumeration only: it creates a DXGI factory and asks it questions; no
+// device, no GPU work. C# 5 for Windows' own compiler.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Runtime.InteropServices;
 
-// One monitor as DXGI sees it. Adapter and Output are DXGI's own enumeration indexes, which are what ffmpeg uses too:
-//   -init_hw_device d3d11va=dda:<Adapter>   makes ffmpeg's Direct3D 11 device on adapter number <Adapter> (IDXGIFactory::EnumAdapters)
-//   ddagrab=output_idx=<Output>            takes output number <Output> OF THAT DEVICE'S ADAPTER (IDXGIAdapter::EnumOutputs)
-// so the pair is only right together. The Desktop Duplication API can only capture an output through a device on the adapter the
-// monitor is plugged into; the capture's frames then live on that adapter, and an encoder on another GPU can't read them.
+// One monitor as DXGI sees it. Adapter and Output are DXGI's own enumeration indexes; DeviceName ("\\.\DISPLAY1") is what libobs's
+// monitor capture accepts as its monitor_id.
 class DxgiOutput {
   public int Adapter, Output;
   public string AdapterName, DeviceName;   // e.g. "NVIDIA GeForce RTX 3070 Ti", "\\.\DISPLAY1"
@@ -20,11 +18,6 @@ class DxgiOutput {
   public int Width { get { return Desktop.Width; } }
   public int Height { get { return Desktop.Height; } }
   public override string ToString() { return "adapter " + Adapter + " (" + AdapterName + ") output " + Output + " " + DeviceName + " " + Desktop.Width + "x" + Desktop.Height + " at " + Desktop.X + "," + Desktop.Y; }
-
-  // The GPU vendor an encoder belongs to, or 0 when it runs on any (the software one).
-  public static uint VendorOf(EncoderProfile e) {
-    switch (e.Name) { case "hevc_nvenc": return 0x10DE; case "hevc_amf": return 0x1002; case "hevc_qsv": return 0x8086; default: return 0; }
-  }
 }
 
 static class Dxgi {

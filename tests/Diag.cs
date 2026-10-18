@@ -1,31 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// RecorderTests.exe --diag [fullscreen|windowed|both] [seconds] : which stage of the capture and encode starves against a focused,
-// GPU-heavy, fullscreen flip-model window (FakeGame.exe), and what the Recorder does in each mode. Measured, 20 s each by default:
-//   D1 gfxcapture alone (frames straight to a null output)        how many real frames does Windows Graphics Capture deliver?
-//   D2 gfxcapture + NVENC passthrough                              the same, with the encoder behind it
-//   D3 NVENC alone on a synthetic 2560x1440 picture                how fast the encoder runs while the GPU is saturated
-//   D4 ddagrab + NVENC (cfr with its own repeats, vfr without)     the Desktop Duplication path
-//   R  the Recorder itself: window or screen capture x cfr or vfr x standard or quality
-// For each: real frames a second, output speed (written video time against the clock), FakeGame's presented fps without and with
-// the recording (the game's cost), GPU and encoder utilisation, ffmpeg's CPU. A summary table is printed as TABLE lines.
-// Safety: after every step the System log is searched for NVIDIA driver events (nvlddmkm); the first one stops everything.
+// RecorderTests.exe --diag [windowed|fullscreen] [seconds]: does game capture keep up where window capture starved? FakeGame.exe (a Direct3D 11
+// flip-model window whose load is tuned until it is GPU-bound at 60 fps, like a heavy game) is recorded by the Recorder for `seconds` each way:
+//   game    game capture (OBS's hook inside FakeGame)
+//   window  window capture (Windows Graphics Capture, what 0.1.x used)
+// For each: FakeGame's presented fps alone and while recorded, the frames written, the frames the GPU drew late or the encoder skipped, how many
+// distinct pictures the file holds (a starved capture repeats the last one), and GPU and encoder use. TABLE lines sum it up.
+// Safety: like every GPU mode it refuses next to a real game (the guard), and the System log is searched for NVIDIA driver resets after each step.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Diagnostics.Eventing.Reader;
 using System.Globalization;
 using System.IO;
-using System.Text;
 using System.Threading;
 
 static class Diag {
-  static string build, work;
-  static readonly List<string> table = new List<string>();
-
   static string F(double v, string f) { return v.ToString(f, CultureInfo.InvariantCulture); }
 
   // ---- nvidia-smi once a second
-  class Smi {
+  public class Smi {
     readonly List<int[]> s = new List<int[]>();
     Process p;
     public void Start() {
@@ -39,39 +31,37 @@ static class Diag {
     }
     public void Clear() { lock (s) s.Clear(); }
     public void Stop() { try { if (!p.HasExited) p.Kill(); p.WaitForExit(3000); } catch (Exception) { } }
-    public string Avg(out double g, out double e) {
-      lock (s) {
-        g = 0; e = 0;
-        foreach (var x in s) { g += x[0]; e += x[1]; }
-        if (s.Count > 0) { g /= s.Count; e /= s.Count; }
-        return s.Count + " samples";
-      }
+    public void Avg(out double g, out double e) {
+      lock (s) { g = 0; e = 0; foreach (var x in s) { g += x[0]; e += x[1]; } if (s.Count > 0) { g /= s.Count; e /= s.Count; } }
     }
   }
 
-  // ---- FakeGame
-  class Game {
+  // ---- FakeGame, started by the tests and the diag; it says READY with its window handle, then its presented fps each second
+  public class Game {
     public Process P;
-    public long Hwnd;
-    public string Ready = "", Mode;
-    public bool Foreground;
+    public IntPtr Hwnd;
+    public int Pid;
+    public string Ready = "";
     public readonly List<KeyValuePair<DateTime, double>> Fps = new List<KeyValuePair<DateTime, double>>();
     public int Load;
-    string quitName;
+    public static Action<int> Started;   // the new process's id, the moment it starts (the tests' watcher allows its window before it shows)
     EventWaitHandle quit;
 
-    public static Game Start(string mode, int vsync, string log) {
-      var g = new Game { Mode = mode };
-      g.quitName = "Global\\BifrostFakeGame-" + Guid.NewGuid().ToString("N");
-      g.quit = new EventWaitHandle(false, EventResetMode.ManualReset, g.quitName);
-      string args = "--mode " + mode + " --monitor primary --vsync " + vsync + " --buffers 3 --load auto --target-fps 60 --quit-event " + g.quitName + " --log " + FfmpegArgs.Quote(log) + (mode == "windowed" ? " --size 1600x900" : "");
+    // mode fullscreen|windowed; load a number of shader loops, or "auto" (tuned to a GPU-bound 60 fps); vsync 1 or 0.
+    public static Game Start(string build, string mode, string size, string load, int vsync, string log) {
+      var g = new Game();
+      string quitName = "Global\\BifrostFakeGame-" + Guid.NewGuid().ToString("N");
+      g.quit = new EventWaitHandle(false, EventResetMode.ManualReset, quitName);
+      string args = "--mode " + mode + " --monitor primary --vsync " + vsync + " --buffers 3 --load " + load + " --target-fps 60 --quit-event " + quitName + " --log " + Tools.Quote(log) + (mode == "windowed" ? " --size " + size : "");
       g.P = Proc.Start(Path.Combine(build, "FakeGame.exe"), args, false);
+      g.Pid = g.P.Id;
+      var started = Started; if (started != null) started(g.Pid);
       var ready = new ManualResetEvent(false);
       g.P.OutputDataReceived += delegate(object o, DataReceivedEventArgs e) {
         if (e.Data == null) return;
         if (e.Data.StartsWith("READY")) {
-          g.Ready = e.Data; g.Foreground = e.Data.Contains("foreground=True");
-          int i = e.Data.IndexOf("hwnd="); if (i >= 0) { int j = e.Data.IndexOf(' ', i); g.Hwnd = long.Parse(e.Data.Substring(i + 5, j - i - 5), CultureInfo.InvariantCulture); }
+          g.Ready = e.Data;
+          int i = e.Data.IndexOf("hwnd="); if (i >= 0) { int j = e.Data.IndexOf(' ', i); g.Hwnd = new IntPtr(long.Parse(e.Data.Substring(i + 5, j - i - 5), CultureInfo.InvariantCulture)); }
           ready.Set();
         } else if (e.Data.StartsWith("FPS ")) {
           var p = e.Data.Split(' ');
@@ -79,11 +69,11 @@ static class Diag {
         } else if (e.Data.StartsWith("ERROR")) { g.Ready = e.Data; ready.Set(); }
       };
       g.P.BeginOutputReadLine(); g.P.BeginErrorReadLine();
-      if (!ready.WaitOne(40000) || g.Hwnd == 0) throw new Exception("FakeGame did not start: " + g.Ready);
+      if (!ready.WaitOne(40000) || g.Hwnd == IntPtr.Zero) { g.Stop(); throw new Exception("FakeGame did not start: " + g.Ready); }
       return g;
     }
 
-    // Waits until the load controller has settled: three presented-fps lines in a row within 4% of 60.
+    // Waits until the load has settled: three presented-fps lines in a row within 4% of 60.
     public bool Calibrate(int maxSeconds) {
       var sw = Stopwatch.StartNew();
       while (sw.Elapsed.TotalSeconds < maxSeconds) {
@@ -94,11 +84,13 @@ static class Diag {
     }
 
     public double FpsBetween(DateTime a, DateTime b) {
-      lock (Fps) {
-        double sum = 0; int n = 0;
-        foreach (var kv in Fps) if (kv.Key >= a && kv.Key <= b) { sum += kv.Value; n++; }
-        return n == 0 ? double.NaN : sum / n;
-      }
+      lock (Fps) { double sum = 0; int n = 0; foreach (var kv in Fps) if (kv.Key >= a && kv.Key <= b) { sum += kv.Value; n++; } return n == 0 ? double.NaN : sum / n; }
+    }
+
+    // The window as the Recorder's list would show it.
+    public WindowInfo Window() {
+      foreach (var w in Native.ListWindows()) if (w.Handle == Hwnd) return w;
+      return null;
     }
 
     public void Stop() {
@@ -108,183 +100,68 @@ static class Diag {
     }
   }
 
-  static void SafetyCheck(string where) { GpuSafety.Check(where); }
-
-  // ---- one measured stretch: what the game does, what the GPU does, and how far a capture/encode (ffmpeg or the Recorder) gets
-  class Result { public double RealFps = double.NaN, Speed = double.NaN, GameBase = double.NaN, GameDuring = double.NaN, Gpu, Enc, CpuPct, Dup; public string Note = ""; }
-
-  // Runs ffmpeg for `seconds` of wall time (progress read from -progress), then ends it with q.
-  static Result RunFfmpeg(Game game, Smi smi, string args, int seconds, string note) {
-    var res = new Result { Note = note };
-    var tele = new Telemetry();
-    var errors = new StringBuilder();
-    var p = Proc.Start(Ffmpeg.Exe, args, true);
-    p.OutputDataReceived += delegate(object o, DataReceivedEventArgs e) { if (e.Data != null) tele.Feed(e.Data); };
-    p.ErrorDataReceived += delegate(object o, DataReceivedEventArgs e) { if (e.Data != null) lock (errors) errors.AppendLine(e.Data); };
-    p.BeginOutputReadLine(); p.BeginErrorReadLine();
-    // ffmpeg's start-up (devices, first frame) isn't part of the measurement: sample from 3 s after it starts
-    var sw = Stopwatch.StartNew();
-    while (sw.Elapsed.TotalSeconds < 3 && !p.HasExited) Thread.Sleep(50);
-    long f0 = tele.Frames, o0 = tele.OutUs; double t0 = sw.Elapsed.TotalSeconds;
-    DateTime g0 = DateTime.UtcNow; smi.Clear(); TimeSpan cpu0 = SafeCpu(p);
-    while (sw.Elapsed.TotalSeconds < 3 + seconds && !p.HasExited) Thread.Sleep(100);
-    long f1 = tele.Frames, o1 = tele.OutUs; double t1 = sw.Elapsed.TotalSeconds;
-    DateTime g1 = DateTime.UtcNow; TimeSpan cpu1 = SafeCpu(p);
-    double ga, ea; smi.Avg(out ga, out ea); res.Gpu = ga; res.Enc = ea;
-    res.GameDuring = game.FpsBetween(g0, g1);
-    if (!p.HasExited) { double dt = t1 - t0; res.RealFps = (f1 - f0) / dt; res.Speed = o0 >= 0 && o1 >= 0 ? (o1 - o0) / 1e6 / dt : double.NaN; res.CpuPct = 100 * (cpu1 - cpu0).TotalSeconds / dt; }
-    res.Dup = tele.Dup;
-    // end it: q, then the grace a stalled capture needs, then force
-    try { p.StandardInput.Write("q\n"); p.StandardInput.Flush(); } catch (Exception) { }
-    if (!p.WaitForExit(15000)) { res.Note += " [q ignored 15 s, killed]"; try { p.Kill(); p.WaitForExit(3000); } catch (Exception) { } }
-    if (p.HasExited && p.ExitCode != 0 && double.IsNaN(res.RealFps)) { lock (errors) res.Note += " [ffmpeg: " + EncoderChoice.Last(errors.ToString(), 2) + "]"; }
-    return res;
+  // How many different pictures a video holds (each FakeGame frame shows its own frame number, so a repeated picture is a starved capture).
+  public static int DistinctFrames(string video, out int total) {
+    string so, se;
+    total = 0;
+    Proc.Run(Tools.Ffmpeg, "-hide_banner -loglevel error -nostdin -i " + Tools.Quote(video) + " -map 0:v:0 -f framemd5 -", 600000, out so, out se);
+    var seen = new HashSet<string>();
+    foreach (string l in so.Split('\n')) {
+      if (l.StartsWith("#") || l.Trim().Length == 0) continue;
+      var p = l.Split(',');
+      if (p.Length >= 6) { total++; seen.Add(p[5].Trim()); }
+    }
+    return seen.Count;
   }
 
-  static TimeSpan SafeCpu(Process p) { try { return p.TotalProcessorTime; } catch (Exception) { return TimeSpan.Zero; } }
-
-  static string Row(string scenario, string test, Result r) {
-    return "| " + scenario + " | " + test + " | " + (double.IsNaN(r.RealFps) ? "-" : F(r.RealFps, "0.0")) + " | " + (double.IsNaN(r.Speed) ? "-" : F(r.Speed, "0.00") + "x") + " | " +
-           (double.IsNaN(r.GameBase) ? "-" : F(r.GameBase, "0.0")) + " > " + (double.IsNaN(r.GameDuring) ? "-" : F(r.GameDuring, "0.0")) + " | " + F(r.Gpu, "0") + "% / " + F(r.Enc, "0") + "% | " +
-           (double.IsNaN(r.CpuPct) ? "-" : F(r.CpuPct, "0") + "%") + " | " + r.Note.Trim() + " |";
-  }
-
-  static void Report(string scenario, string test, Result r) {
-    string row = Row(scenario, test, r);
-    table.Add(row);
-    Console.WriteLine("TABLE " + row);
-    Console.Out.Flush();
-    SafetyCheck(scenario + " / " + test);
-  }
-
-  const string Tags = "setparams=colorspace=smpte170m:range=tv:color_primaries=bt709:color_trc=bt709";
-  static string Gfx(long hwnd) { return "gfxcapture=hwnd=" + hwnd + ":max_framerate=60:capture_cursor=true:display_border=false:resize_mode=scale_aspect:width=-2:height=-2"; }
-  static string Nv(int maxrate) { return EncoderProfile.Nvenc.Options(maxrate, 24, false); }
-
-  public static int Run(string[] args, string buildDir) {
-    build = buildDir;
-    work = Path.Combine(build, "diag"); if (Directory.Exists(work)) Directory.Delete(work, true); Directory.CreateDirectory(work);
-    GpuSafety.Begin();
-    string which = args.Length > 1 && (args[1] == "fullscreen" || args[1] == "windowed" || args[1] == "both") ? args[1] : "both";
-    int seconds = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 20;
-    string only = null; for (int i = 1; i < args.Length - 1; i++) if (args[i] == "--only") only = "," + args[i + 1] + ",";
-    var scenarios = which == "both" ? new[] { "fullscreen", "windowed" } : new[] { which };
-    Console.WriteLine("Counts before: ffmpeg=" + Process.GetProcessesByName("ffmpeg").Length + " ffprobe=" + Process.GetProcessesByName("ffprobe").Length + " cmd=" + Process.GetProcessesByName("cmd").Length + " conhost=" + Process.GetProcessesByName("conhost").Length);
+  public static int Run(string[] args, string build) {
+    string mode = args.Length > 1 ? args[1] : "windowed";
+    int seconds = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 15;
+    string work = Path.Combine(build, "diag");
+    Directory.CreateDirectory(work);
+    var table = new List<string>();
+    Console.WriteLine("diag: FakeGame " + mode + (mode == "windowed" ? " 1920x1080" : "") + ", load tuned to a GPU-bound 60 fps; " + seconds + " s each way");
+    // The engine first, before the GPU is busy: its start opens test sessions on every encoder, and on this PC that next to a GPU held at 99%
+    // reset the driver (Oct 18, 02:00:28) and took 60 s. The Recorder itself starts it when it opens, for the same reason.
+    string startErr = Obs.Start(1920, 1080, 1920, 1080);
+    if (startErr != null) { Console.WriteLine("ENGINE FAILED " + startErr); return 1; }
+    GpuSafety.Check("the engine start");
+    var g = Game.Start(build, mode, "1920x1080", "auto", 0, Path.Combine(work, "fakegame.log"));
     var smi = new Smi(); smi.Start();
-    var enc = EncoderChoice.Detect(Ffmpeg.Exe);
-    Console.WriteLine("encoder: " + enc.Name + "; each measurement is " + seconds + " s; FakeGame at 2560x1440 unlocked, load auto-tuned to a GPU-bound 60 fps");
     try {
-      foreach (string mode in scenarios) {
-        Game g = null;
-        try {
-          g = Game.Start(mode, 0, Path.Combine(work, "fakegame-" + mode + ".log"));
-          Console.WriteLine("FakeGame: " + g.Ready);
-          bool cal = g.Calibrate(40);
-          Console.WriteLine("FakeGame calibrated: " + cal + ", load " + g.Load);
-          SafetyCheck(mode + " start");
-          // the game alone
-          smi.Clear(); DateTime b0 = DateTime.UtcNow; Thread.Sleep(8000); DateTime b1 = DateTime.UtcNow;
-          double bg, be; smi.Avg(out bg, out be);
-          double gameBase = g.FpsBetween(b0, b1);
-          var baseRes = new Result { GameBase = gameBase, GameDuring = gameBase, Gpu = bg, Enc = be, Note = "FakeGame alone, load " + g.Load + ", foreground=" + g.Foreground };
-          Report(mode, "game alone", baseRes);
-          if (only != null && !only.Contains(",game,")) { }
-
-          Func<string, bool> want = delegate(string id) { return only == null || only.Contains("," + id + ","); };
-          Result r;
-          int ceiling = FfmpegArgs.MaxrateKbps(2560, 1440);
-          if (want("D1")) {
-            r = RunFfmpeg(g, smi, "-hide_banner -loglevel warning -nostats -progress pipe:1 -stats_period 0.25 -y -filter_complex \"" + Gfx(g.Hwnd) + "[v]\" -map \"[v]\" -f null -", seconds, "gfxcapture to null");
-            r.GameBase = gameBase; Report(mode, "D1 gfxcapture alone", r);
-          }
-          if (want("D2")) {
-            r = RunFfmpeg(g, smi, "-hide_banner -loglevel warning -nostats -progress pipe:1 -stats_period 0.25 -y -filter_complex \"" + Gfx(g.Hwnd) + "," + Tags + "[v]\" -map \"[v]\" " + Nv(ceiling) + " " + FfmpegArgs.VfrSync + " -f null -", seconds, "passthrough, no repeats");
-            r.GameBase = gameBase; Report(mode, "D2 gfxcapture + NVENC (vfr)", r);
-          }
-          if (want("D3")) {
-            r = RunFfmpeg(g, smi, "-hide_banner -loglevel warning -nostats -progress pipe:1 -stats_period 0.25 -y -init_hw_device d3d11va=d3d -filter_hw_device d3d -f lavfi -i testsrc2=size=2560x1440:rate=60 -vf \"format=bgra,hwupload," + Tags + "\" " + Nv(ceiling) + " -f null -", seconds, "synthetic 1440p, as fast as it goes (60 fps = 1.00x)");
-            r.GameBase = gameBase; Report(mode, "D3 NVENC alone", r);
-          }
-          if (want("D4")) {
-            var m = Dxgi.ForWindow(new IntPtr(g.Hwnd));
-            if (m == null) Console.WriteLine("no DXGI output for FakeGame's window");
-            else {
-              string hw = "-init_hw_device d3d11va=dda:" + m.Adapter + " -filter_hw_device dda ";
-              r = RunFfmpeg(g, smi, "-hide_banner -loglevel warning -nostats -progress pipe:1 -stats_period 0.25 -y " + hw + "-filter_complex \"ddagrab=output_idx=" + m.Output + ":framerate=60:draw_mouse=true," + Tags + "[v]\" -map \"[v]\" " + Nv(ceiling) + " -fps_mode cfr -f null -", seconds, "ddagrab, its own repeats (dup_frames on)");
-              r.GameBase = gameBase; Report(mode, "D4a ddagrab + NVENC (cfr)", r);
-              r = RunFfmpeg(g, smi, "-hide_banner -loglevel warning -nostats -progress pipe:1 -stats_period 0.25 -y " + hw + "-filter_complex \"ddagrab=output_idx=" + m.Output + ":framerate=60:draw_mouse=true:dup_frames=false," + Tags + "[v]\" -map \"[v]\" " + Nv(ceiling) + " " + FfmpegArgs.VfrSync + " -f null -", seconds, "ddagrab, real frames only");
-              r.GameBase = gameBase; Report(mode, "D4b ddagrab + NVENC (vfr)", r);
-            }
-          }
-          if (want("R")) {
-            foreach (bool screen in new[] { false, true }) foreach (bool vfr in new[] { false, true }) foreach (bool qual in new[] { false, true }) {
-              var cfg = new AppSettings { CaptureMethod = screen ? "screen" : "window", FrameRateMode = vfr ? "vfr" : "cfr", EncoderProfile = qual ? "quality" : "standard" };
-              string id = "R-" + (screen ? "screen" : "window") + "-" + (vfr ? "vfr" : "cfr") + "-" + (qual ? "quality" : "standard");
-              if (only != null && !only.Contains(",R,") && !only.Contains("," + id + ",")) continue;
-              r = RunRecorder(g, smi, enc, cfg, id, seconds);
-              r.GameBase = gameBase; Report(mode, "Recorder " + id.Substring(2), r);
-            }
-          }
-        } finally { if (g != null) g.Stop(); }
-        Thread.Sleep(2000);
+      Console.WriteLine("FakeGame: " + g.Ready);
+      Console.WriteLine("calibrated: " + g.Calibrate(40) + ", load " + g.Load);
+      var t0 = DateTime.UtcNow; smi.Clear(); Thread.Sleep(6000);
+      double alone = g.FpsBetween(t0, DateTime.UtcNow), ga, ea; smi.Avg(out ga, out ea);
+      Console.WriteLine("ALONE FakeGame " + F(alone, "0.0") + " fps, GPU " + F(ga, "0") + "%, encoder " + F(ea, "0") + "%");
+      table.Add("TABLE | FakeGame alone | " + F(alone, "0.0") + " fps | - | - | - | GPU " + F(ga, "0") + "% enc " + F(ea, "0") + "%");
+      GpuSafety.Check("FakeGame alone");
+      var win = g.Window();
+      if (win == null) throw new Exception("FakeGame's window isn't in the window list");
+      foreach (string method in new[] { "game", "window" }) {
+        var cfg = new AppSettings { CaptureMethod = method };
+        var size = Native.ClientSize(g.Hwnd);
+        var rec = new Recording(null, win, size.Width, size.Height, work, "diag-" + mode + "-" + method, cfg, Path.Combine(work, "logs"));
+        string err = Obs.Start(rec.BaseWidth, rec.BaseHeight, rec.OutWidth, rec.OutHeight);
+        if (err == null && !rec.Start(out err, 20000)) { }
+        if (err != null) { Console.WriteLine(method + ": START FAILED " + err); table.Add("TABLE | " + method + " | failed: " + err); continue; }
+        smi.Clear();
+        var a = DateTime.UtcNow;
+        Thread.Sleep(seconds * 1000);
+        var b = DateTime.UtcNow;
+        double during = g.FpsBetween(a.AddSeconds(2), b), gu, eu; smi.Avg(out gu, out eu);
+        string health = rec.Health;
+        var res = rec.Stop();
+        int total = 0;
+        int distinct = res.Ok ? DistinctFrames(res.Mp4, out total) : 0;
+        string line = method + ": capture " + rec.Capture + ", FakeGame " + F(during, "0.0") + " fps (alone " + F(alone, "0.0") + "), frames written " + res.Frames + " for " + F((b - a).TotalSeconds, "0.0") + " s, late " + res.Lagged + ", skipped " + res.Skipped +
+                      ", distinct pictures " + distinct + " of " + total + " (" + F(total > 0 ? 100.0 * distinct / total : 0, "0") + "%), GPU " + F(gu, "0") + "% encoder " + F(eu, "0") + "%, status at the end: " + health + ", " + res.Message;
+        Console.WriteLine(line);
+        table.Add("TABLE | " + method + " capture | " + F(during, "0.0") + " fps | " + res.Frames + " written | late " + res.Lagged + " skipped " + res.Skipped + " | " + distinct + "/" + total + " distinct | GPU " + F(gu, "0") + "% enc " + F(eu, "0") + "%");
+        GpuSafety.Check("the " + method + " capture run");
       }
-    } finally { smi.Stop(); }
-    SafetyCheck("the end");
-    Console.WriteLine();
-    Console.WriteLine("| scenario | test | real frames/s | output speed | game fps alone > with it | GPU / encoder util | ffmpeg CPU (of one core) | note |");
-    Console.WriteLine("| --- | --- | --- | --- | --- | --- | --- | --- |");
-    foreach (string row in table) Console.WriteLine(row);
-    Console.WriteLine();
-    Console.WriteLine("Counts after:  ffmpeg=" + Process.GetProcessesByName("ffmpeg").Length + " ffprobe=" + Process.GetProcessesByName("ffprobe").Length + " cmd=" + Process.GetProcessesByName("cmd").Length + " conhost=" + Process.GetProcessesByName("conhost").Length);
-    int alive = Proc.StillRunning();
-    Console.WriteLine("processes this run started that are still running: " + alive);
-    try { Directory.Delete(work, true); } catch (Exception) { }
+    } finally { smi.Stop(); g.Stop(); }
+    foreach (string t in table) Console.WriteLine(t);
     return 0;
-  }
-
-  // The Recorder itself, on FakeGame's window, for `seconds`; the result file is checked a little and deleted.
-  static Result RunRecorder(Game g, Smi smi, EncoderProfile enc, AppSettings cfg, string id, int seconds) {
-    var res = new Result();
-    string folder = Path.Combine(work, "rec");
-    var win = new IntPtr(g.Hwnd);
-    var size = Native.ClientSize(win);
-    var scr = cfg.Screen ? Dxgi.ForWindow(win) : null;
-    var rec = new Recording(enc, win, size.Width, size.Height, folder, id, cfg, Path.Combine(work, "logs"), scr);
-    string err;
-    if (!rec.Start(out err, 15000)) { res.Note = "[did not start: " + err + "]"; return res; }
-    var sw = Stopwatch.StartNew();
-    while (sw.Elapsed.TotalSeconds < 3) Thread.Sleep(50);
-    long f0 = rec.Frames; var t0 = sw.Elapsed.TotalSeconds; double o0 = rec.Tele.OutUs < 0 ? double.NaN : rec.Tele.OutUs / 1e6;
-    DateTime g0 = DateTime.UtcNow; smi.Clear(); TimeSpan cpu0 = rec.Cpu;
-    double minWin = double.NaN; bool behind = false;
-    while (sw.Elapsed.TotalSeconds < 3 + seconds) {
-      Thread.Sleep(250);
-      double ws = rec.Tele.WindowSpeed; if (!double.IsNaN(ws) && (double.IsNaN(minWin) || ws < minWin)) minWin = ws;
-      if (rec.Behind) behind = true;
-    }
-    long f1 = rec.Frames; double t1 = sw.Elapsed.TotalSeconds; double o1 = rec.Tele.OutUs < 0 ? double.NaN : rec.Tele.OutUs / 1e6;
-    DateTime g1 = DateTime.UtcNow; TimeSpan cpu1 = rec.Cpu;
-    double ga, ea; smi.Avg(out ga, out ea); res.Gpu = ga; res.Enc = ea;
-    res.GameDuring = g.FpsBetween(g0, g1);
-    double dt = t1 - t0;
-    res.Speed = (o1 - o0) / dt; res.CpuPct = 100 * (cpu1 - cpu0).TotalSeconds / dt;
-    double encoded = (f1 - f0) / dt;
-    var done = rec.Stop();
-    res.Dup = done.Dup;
-    // real frames: in vfr every frame is real; in cfr the repeats are tiny packets, so count the packets that carry a picture change
-    double real = encoded;
-    if (done.Ok && !cfg.Vfr) {
-      string so, se;
-      Proc.Run(Ffmpeg.ProbeExe, "-v error -select_streams v:0 -show_entries packet=size -of csv=p=0 " + FfmpegArgs.Quote(done.Mp4), 60000, out so, out se);
-      int big = 0, all = 0; foreach (string l in so.Split(new[] { (char)10 })) { int n; if (int.TryParse(l.Trim(), out n)) { all++; if (n > 1200) big++; } }
-      real = all > 0 ? encoded * big / all : double.NaN;
-      res.Note += " " + big + " of " + all + " packets carry a new picture;";
-    }
-    res.RealFps = real;
-    res.Note += " encoded " + F(encoded, "0.0") + " fps, slowest 4 s window " + F(minWin, "0.00") + "x, status: " + rec.Health + (behind ? " (flagged behind)" : "") + ", gpu priority " + rec.GpuPriorityResult + (done.Forced ? ", FORCED" : "") + ", stop " + F(done.StopSeconds, "0.0") + " s;";
-    if (done.Ok) { try { File.Delete(done.Mp4); } catch (Exception) { } }
-    else res.Note += " [" + done.Message + "]";
-    try { foreach (string f in Directory.GetFiles(folder, id + ".*")) File.Delete(f); } catch (Exception) { }
-    return res;
   }
 }

@@ -27,7 +27,8 @@ class MainForm : Form {
   readonly WindowList list = new WindowList();
   readonly PillButton record = new PillButton(), refresh = new PillButton(), open = new PillButton(), upload = new PillButton(), settingsBtn = new PillButton();
   string prefsFile;
-  string encoderNote = "";                       // when the first encoder didn't start and another is in use
+  string encoderNote = "";                       // when the first encoder or the chosen capture didn't start and another is in use
+  string engineMissing;                          // what is missing for the recording engine (libobs) to start, or null
   EncoderProfile chipEncoder;                    // the encoder the chip names
   SettingsForm settingsWindow;
   string hotkeyText = "", hotkeyProblem;       // what is shown for the global key; why it isn't registered, if it isn't
@@ -43,7 +44,6 @@ class MainForm : Form {
   string encoderText = "Checking the encoder…";
   string recordingsFolder, logsFolder;
   AppSettings cfg = new AppSettings();
-  string gpuShown;   // what the last recording got on the GPU ("high", "above-normal", "normal"); until then the setting
   bool closeWhenDone;
   bool encoderReady;
 
@@ -55,8 +55,9 @@ class MainForm : Form {
 
   // Tests: no beeps, and a place to see which cue would have played; what "Upload to Armory" does when there is no key (opens the website).
   public static bool NoSound;
-  public static bool SkipEncoderCheck;   // the tests that must not start any GPU encoder session (nothing is recorded in them)
+  public static bool SkipEncoderCheck;   // the tests that don't even look at the GPU's maker (nothing is recorded in them)
   public static Action<string> CueHook;
+  public static bool KeepEngine;         // the tests open many windows in one process: the engine is started once and shut down at their end
   public Action<string> OpenUrl;
 
   [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr h, int id, uint mods, uint vk);
@@ -105,10 +106,7 @@ class MainForm : Form {
     Palette.Changed += OnPalette;
 
     tick.Interval = 250;
-    tick.Tick += delegate {
-      if (state == State.Recording && current != null) { UpdateRecordingStatus(); InvalidateBottom(); }
-      else if (state == State.Saving && current != null && current.Draining) { SetStatus("Finishing…  " + current.LagSeconds.ToString("0") + " s of video still to write", Palette.Amber); InvalidateBottom(); }
-    };
+    tick.Tick += delegate { if (state == State.Recording && current != null) { UpdateRecordingStatus(); InvalidateBottom(); } };
     DoLayout();
   }
 
@@ -212,23 +210,29 @@ class MainForm : Form {
     base.OnShown(e);
     ReloadWindows();
     tick.Start();
-    if (!File.Exists(Ffmpeg.Exe)) { SetStatus("ffmpeg.exe is missing from the bin folder next to the Recorder.", Palette.Red); encoderText = "No ffmpeg"; UpdateButtons(); Invalidate(); return; }
-    // How the encoder is chosen (the EncoderCheck setting): a test encode starts a GPU encoder session, and starting one next to a running game has reset
-    // this PC's GPU driver, so it can be put off to the first Record, or skipped (by the GPU's maker, with a fall back if the real start fails).
+    engineMissing = Obs.Missing();
+    if (engineMissing != null) { SetStatus(engineMissing + " Reinstall Bifrost Recorder.", Palette.Red); encoderText = "No recording engine"; UpdateButtons(); Invalidate(); return; }
+    // The engine starts now, on its own thread (Obs.cs says why not at the first Record). Until it is ready the chip names the encoder for the
+    // GPU's maker and Record waits; then the chip names the encoder that really works here.
     if (SkipEncoderCheck) { encoderText = "Encoder not checked (test)"; Invalidate(); return; }
-    if (cfg.EncoderCheck == "vendor") { var v = EncoderChoice.ByVendor(); encoderReady = true; ShowChip(v); UpdateButtons(); Invalidate(); return; }
-    if (cfg.EncoderCheck == "record") { encoderReady = true; encoderText = "Encoder: checked at the first Record"; UpdateButtons(); Invalidate(); return; }
-    var t = new Thread(delegate() {
-      try { var enc = EncoderChoice.Detect(Ffmpeg.Exe); Ui(delegate { encoderReady = true; ShowChip(enc); UpdateButtons(); Invalidate(); }); }
-      catch (Exception ex) { Ui(delegate { SetStatus("Couldn't check the encoder: " + ex.Message, Palette.Red); }); }
+    ShowChip(EncoderChoice.Picked ?? EncoderChoice.ByVendor());
+    string waiting = "Starting the recording engine…";
+    if (!Obs.Started) SetStatus(waiting, Palette.Muted);
+    Obs.StartInBackground(delegate(string err) {
+      Ui(delegate {
+        if (err != null) { engineMissing = err; SetStatus(err, Palette.Red); encoderText = "No recording engine"; UpdateButtons(); Invalidate(); return; }
+        var picked = Obs.PickEncoder(); EncoderChoice.Set(picked); ShowChip(picked);
+        encoderReady = true;
+        if (status == waiting) SetStatus("Pick a window, then press Record.", Palette.Muted);
+        UpdateButtons(); Invalidate();
+      });
     });
-    t.IsBackground = true; t.Name = "encoder check"; t.Start();
   }
 
-  // The header chip: the active set, e.g. "HEVC · NVENC · standard · 1080p · GPU high".
-  public static string ChipText(EncoderProfile e, AppSettings c, string gpu) {
-    return (e.Codec == "hevc" ? "HEVC" : "H.264") + " · " + e.Short + " · " + c.EncoderProfile + " · " + (c.MaxHeight > 0 && !c.Screen ? c.MaxHeight + "p" : "native") +
-           (c.Screen ? " · screen" : "") + (c.Vfr ? " · vfr" : "") + " · GPU " + (gpu ?? c.GpuPriority);
+  // The header chip: the active set, e.g. "HEVC · NVENC · light · 1080p · game capture · mic · GPU normal".
+  public static string ChipText(EncoderProfile e, AppSettings c) {
+    return (e.Codec == "hevc" ? "HEVC" : "H.264") + " · " + e.Short + " · " + (c.Quality ? "quality" : "light") + " · " + (c.MaxHeight > 0 ? c.MaxHeight + "p" : "native") +
+           " · " + (c.CaptureMethod == "window" ? "window" : c.Screen ? "screen" : "game capture") + (c.WithMic ? " · mic" : "") + " · GPU " + c.GpuPriority;
   }
 
   protected override void OnActivated(EventArgs e) { base.OnActivated(e); if (state == State.Idle && IsHandleCreated && !Quiet) ReloadWindows(); }
@@ -241,9 +245,9 @@ class MainForm : Form {
     base.OnFormClosing(e);
   }
 
-  protected override void OnFormClosed(FormClosedEventArgs e) { tick.Stop(); Palette.Changed -= OnPalette; base.OnFormClosed(e); }
+  protected override void OnFormClosed(FormClosedEventArgs e) { tick.Stop(); Palette.Changed -= OnPalette; if (!KeepEngine) Obs.Shutdown(); base.OnFormClosed(e); }
 
-  void ShowChip(EncoderProfile e) { chipEncoder = e; encoderText = ChipText(e, cfg, gpuShown); }
+  void ShowChip(EncoderProfile e) { chipEncoder = e; encoderText = ChipText(e, cfg); }
 
   // The colours changed (the Settings window, live): the controls that hold a colour take the new one, everything else repaints from Palette.
   void OnPalette() { Ui(delegate { ApplyTheme(); }); }
@@ -255,7 +259,7 @@ class MainForm : Form {
     Invalidate(true);
   }
 
-  // Settings: the five recording choices and the look. Changes are saved at once (the prefs file) and apply to the next recording; the chip follows.
+  // Settings: the six recording choices and the look. Changes are saved at once (the prefs file) and apply to the next recording; the chip follows.
   void OpenSettings() {
     if (settingsWindow != null && !settingsWindow.IsDisposed) { settingsWindow.Focus(); return; }
     settingsWindow = new SettingsForm(cfg, delegate { return BusyForTest || state != State.Idle; }, SettingsChanged);
@@ -389,7 +393,7 @@ class MainForm : Form {
 
   void UpdateButtons() {
     bool idle = state == State.Idle;
-    record.Enabled = (idle && list.SelectedItem != null && encoderReady && File.Exists(Ffmpeg.Exe)) || state == State.Recording;
+    record.Enabled = (idle && list.SelectedItem != null && encoderReady && engineMissing == null) || state == State.Recording;
     record.Look = state == State.Recording ? PillButton.Kind.Danger : PillButton.Kind.Primary;
     record.Text = state == State.Recording ? "Stop" : state == State.Starting ? "Starting…" : state == State.Saving ? "Saving…" : "Record";
     refresh.Enabled = idle; list.Enabled = idle; open.Enabled = true;
@@ -407,32 +411,31 @@ class MainForm : Form {
     if (w == null) return;
     if (!Native.IsWindow(w.Handle)) { SetStatus("That window has gone. Press Refresh.", Palette.Red); ReloadWindows(); return; }
     if (Native.IsMinimized(w.Handle)) { SetStatus("That window is minimized: it sends no picture. Restore it first.", Palette.Red); return; }
+    if (!Obs.Started) { SetStatus("The recording engine is still starting.", Palette.Amber); return; }
     target = w; lastTarget = w; encoderNote = "";
+    var mine = cfg.Clone();   // what this recording is made with: later changes in Settings apply to the next one
+    DxgiOutput screen = mine.Screen ? Dxgi.ForWindow(w.Handle) : null;
+    if (mine.Screen && screen == null) { SetStatus("Screen capture needs the monitor that window is on, and Windows doesn't list it.", Palette.Red); return; }
+    Size sz = Native.ClientSize(w.Handle);   // what the capture records: the client area
+    if (sz.Width <= 0 || sz.Height <= 0) sz = Native.FrameSize(w.Handle);
+    string folder = recordingsFolder;
+    string baseName = FileNames.Unique(folder, FileNames.BaseName(FileNames.Friendly(w.ExePath, w.Title), DateTime.Now));
+    var rec = new Recording(null, w, sz.Width > 0 ? sz.Width : w.Width, sz.Height > 0 ? sz.Height : w.Height, folder, baseName, mine, logsFolder, screen);
     state = State.Starting; UpdateButtons();
     SetStatus("Starting…", Palette.Muted);
-    string folder = recordingsFolder;
+    Obs.Sink = rec.LogLine;
+    string engineError = Obs.Start(rec.BaseWidth, rec.BaseHeight, rec.OutWidth, rec.OutHeight);   // the engine runs: this sets the canvas for this recording
+    if (engineError != null) { Obs.Sink = null; state = State.Idle; UpdateButtons(); SetStatus(engineError, Palette.Red); Cue("error"); return; }
+    var picked = Obs.PickEncoder();
+    EncoderChoice.Set(picked); ShowChip(picked);
     var t = new Thread(delegate() {
-      EncoderProfile enc;
-      var mine = cfg.Clone();   // what this recording is made with: later changes in Settings apply to the next one
-      try { enc = EncoderChoice.Picked ?? (cfg.EncoderCheck == "record" ? EncoderChoice.Detect(Ffmpeg.Exe) : EncoderProfile.Software); }
-      catch (Exception) { enc = EncoderProfile.Software; }
-      Size sz = Native.ClientSize(w.Handle);   // what the capture records: the client area
-      if (sz.Width <= 0 || sz.Height <= 0) sz = Native.FrameSize(w.Handle);
-      string baseName = FileNames.Unique(folder, FileNames.BaseName(FileNames.Friendly(w.ExePath, w.Title), DateTime.Now));
-      var firstEncoder = enc;
-      Recording rec; string error; bool ok;
-      while (true) {
-        rec = new Recording(enc, w.Handle, sz.Width > 0 ? sz.Width : w.Width, sz.Height > 0 ? sz.Height : w.Height, folder, baseName, mine, logsFolder, mine.Screen ? Dxgi.ForWindow(w.Handle) : null);
-        ok = rec.Start(out error, 15000);
-        // an encoder picked without a test encode that ffmpeg then refuses: the next one is tried
-        var next = ok || mine.EncoderCheck != "vendor" || error == null || !error.StartsWith("ffmpeg ended before the first picture") ? null : EncoderChoice.Next(enc);
-        if (next == null) break;
-        enc = next; EncoderChoice.Set(enc);
-      }
+      string error;
+      bool ok = rec.Start(out error, 15000);
       Ui(delegate {
         if (!ok) { state = State.Idle; UpdateButtons(); SetStatus(error, Palette.Red); Cue("error"); if (closeWhenDone) Close(); return; }
-        current = rec; gpuShown = rec.GpuPriorityResult; ShowChip(enc);
-        if (enc != firstEncoder) encoderNote = "  ·  " + firstEncoder.Short + " didn't start, using " + enc.Short;
+        current = rec; ShowChip(rec.Encoder);
+        if (rec.Encoder != picked) encoderNote += "  ·  " + picked.Short + " didn't start, using " + rec.Encoder.Short;
+        if (rec.Capture != mine.CaptureMethod) encoderNote += "  ·  " + (mine.CaptureMethod == "game" ? "game capture couldn't hook it" : mine.CaptureMethod + " capture sent nothing") + ", using " + rec.Capture + " capture";
         rec.Ended += delegate(string why) { Ui(delegate { if (state == State.Recording && current == rec) BeginStop(why + ". Saving…"); }); };
         state = State.Recording; UpdateButtons(); UpdateRecordingStatus(); Invalidate(); Cue("start");
         if (closeWhenDone) BeginStop("Saving before closing…");
@@ -444,8 +447,8 @@ class MainForm : Form {
   void UpdateRecordingStatus() {
     if (current == null) return;
     string size = Megabytes(current.FileBytes);
-    string drops = current.Drop > 0 ? "  ·  " + current.Drop + " dropped" : "";
-    // whether the encoder is keeping up with the window: ffmpeg's progress, worked out over the last few seconds (Telemetry)
+    string drops = current.Skipped > 0 ? "  ·  " + current.Skipped + " frames late" : "";
+    // whether the GPU and the encoder are keeping up: libobs's counters, worked out over the last few seconds (Telemetry)
     SetStatus("Recording " + (target.ExeName.Length > 0 ? target.ExeName : target.Title) + "  ·  " + size + drops + "  ·  " + current.Health + encoderNote, current.Behind ? Palette.Amber : Palette.Soft);
   }
 
@@ -455,7 +458,7 @@ class MainForm : Form {
     if (state != State.Recording || current == null) return;
     state = State.Saving; UpdateButtons();
     var rec = current;
-    SetStatus(why ?? (rec.BehindNow ? "Finishing…  " + rec.LagSeconds.ToString("0") + " s of video still to write" : "Saving…"), rec.BehindNow ? Palette.Amber : Palette.Muted);
+    SetStatus(why ?? "Saving…", Palette.Muted);
     var t = new Thread(delegate() {
       RecordingResult res;
       try { res = rec.Stop(); }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The Settings window. Two pages: RECORDING, the five choices a recording is made with, in plain words with a short hint under each (a change
+// The Settings window. Two pages: RECORDING, the six choices a recording is made with, in plain words with a short hint under each (a change
 // applies to the next recording and is saved at once; greyed while a recording runs), and APPEARANCE, the theme presets and the accent, as in
 // the other Bifrost apps (applied live). The caller's `changed` saves the prefs file and refreshes the header chip and the colours.
 // Painted in the Bifrost console style (Look.cs), from the theme in use. C# 5.
@@ -167,7 +167,7 @@ class SettingsForm : Form {
   readonly AppSettings cfg;
   readonly Func<bool> busy;
   readonly Action changed;
-  readonly ComboBox[] combos = new ComboBox[5];
+  readonly ComboBox[] combos = new ComboBox[SettingChoices.Fields.Length];
   readonly PillButton reset = new PillButton(), done = new PillButton();
   readonly ThemeStrip themes = new ThemeStrip();
   readonly AccentStrip accents = new AccentStrip();
@@ -186,7 +186,7 @@ class SettingsForm : Form {
     FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
     SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
     using (var g = Graphics.FromHwnd(IntPtr.Zero)) S = g.DpiX / 96f;
-    ClientSize = new Size(P(640), P(640));
+    ClientSize = new Size(P(640), P(RowTop + SettingChoices.Fields.Length * RowH + 104));
     if (MainForm.Quiet) { StartPosition = FormStartPosition.Manual; Location = new Point(-32000, -32000); } else StartPosition = FormStartPosition.CenterParent;
     try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
 

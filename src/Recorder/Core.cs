@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The Recorder's decisions, with no window and no process in them, so the tests can check every one: where recordings go, what
-// they're called, which encoder is used and the exact ffmpeg arguments. C# 5 for Windows' own compiler.
+// The Recorder's decisions, with no window, no process and no libobs call in them, so the tests can check every one: where recordings go,
+// what they're called, which encoder is used with which settings, what is captured and which sound goes on which track. C# 5 for Windows' own compiler.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -9,51 +9,53 @@ using System.Text;
 using System.Web.Script.Serialization;
 
 // The choices a recording is made with. They come from, in order of weight: the member's own choices in the Settings window (the prefs file),
-// the experiment keys in BifrostRecorder.settings.json, and the defaults below (what the live tests showed works best under a game).
+// the experiment keys in BifrostRecorder.settings.json, and the defaults below.
 class AppSettings {
   public string DataFolder;                  // null when the file gave none (Bifrost Suite's)
   public string TeamServer, TeamKey;         // the Armory, from the same file Bifrost Suite writes for Planner; the key is never shown, logged or written by the Recorder
-  // ---- the five choices of the Settings window
-  public string EncoderProfile = "standard"; // standard = the light NVENC set, best for games | quality = the older set with spatial AQ and B-frames, for desktop apps
-  public int MaxHeight;                      // 0 = record at the window's own size | 1080 | 720 (scaling costs performance while a game runs)
-  public string CaptureMethod = "window";    // window (gfxcapture) | screen (ddagrab, the whole monitor the window is on)
-  public string FrameRateMode = "cfr";       // cfr (a frame every 1/60 s, repeats filling gaps) | vfr (only real frames, with their real times)
-  public string GpuPriority = "normal";      // the GPU scheduling class asked for ffmpeg: normal (leave it) | high (HIGH, else ABOVE_NORMAL; far slower in the live tests)
+  // ---- the six choices of the Settings window
+  public string EncoderProfile = "standard"; // standard = the light set, best for games | quality = spatial AQ and B-frames, for desktop apps
+  public int MaxHeight;                      // 0 = record at the window's own size | 1080 | 720
+  public string CaptureMethod = "game";      // game (OBS's game capture: a hook inside the game copies each frame) | window (Windows' window capture) | screen (the whole monitor)
+  public string Sound = "game";              // game (only the chosen program's sound) | pc (everything the PC plays)
+  public string Mic = "off";                 // off | on (the default microphone, on its own track)
+  public string GpuPriority = "normal";      // the GPU scheduling class asked for the Recorder: normal (leave it) | high (HIGH, else ABOVE_NORMAL)
   public string ThemeId = "console";         // the look (Theme.cs): console | midnight | od-green | paper | high-contrast
   public string Accent = "theme";            // the accent on top of it: theme (the preset's own hue) | a hue 0-359 | white | black
   // ---- settings.json only
   public string Hotkey = "Ctrl+Alt+R";       // the global start/stop key ("off" for none)
   public bool Cue = true;                    // a short beep on start and stop (they are not part of what's recorded)
-  public string EncoderCheck = "vendor";     // how the encoder is chosen: vendor (no test encode: by the GPU's maker, the next encoder if the real start fails) | record (a tiny test encode at the first Record) | startup (the same, as the window opens)
   public bool Quality { get { return EncoderProfile == "quality"; } }
   public bool Screen { get { return CaptureMethod == "screen"; } }
-  public bool Vfr { get { return FrameRateMode == "vfr"; } }
+  public bool WithMic { get { return Mic == "on"; } }
   public AppSettings Clone() { return (AppSettings)MemberwiseClone(); }
 }
 
 // The Settings window's choices, as plain labels, and what each one sets. Pure, so the tests can check the mapping.
 static class SettingChoices {
-  public enum Field { Encoder, Resolution, Capture, FrameRate, Gpu }
+  public enum Field { Encoder, Resolution, Capture, Sound, Mic, Gpu }
 
-  public static readonly string[] Fields = { "ENCODER", "RESOLUTION", "CAPTURE", "FRAME RATE", "GPU PRIORITY" };
+  public static readonly string[] Fields = { "ENCODER", "RESOLUTION", "CAPTURE", "SOUND", "MICROPHONE", "GPU PRIORITY" };
 
   public static string[] Labels(Field f) {
     switch (f) {
       case Field.Encoder: return new[] { "Light, best for games", "Quality, for desktop apps only (heavier on the GPU)" };
       case Field.Resolution: return new[] { "Native", "1080p", "720p" };
-      case Field.Capture: return new[] { "This window", "The whole screen it's on" };
-      case Field.FrameRate: return new[] { "Steady 60 fps, best for editing", "Only real frames (variable)" };
-      default: return new[] { "Normal", "High (not recommended with games)" };
+      case Field.Capture: return new[] { "Game capture, best for games", "This window", "The whole screen it's on" };
+      case Field.Sound: return new[] { "The program's own sound", "Everything the PC plays" };
+      case Field.Mic: return new[] { "Off", "On, on its own track" };
+      default: return new[] { "Normal", "High" };
     }
   }
 
   public static string Hint(Field f) {
     switch (f) {
       case Field.Encoder: return "Light keeps the game's frame rate. Quality looks a little better but asks much more of the GPU.";
-      case Field.Resolution: return "Scaling costs performance while a game runs.";
-      case Field.Capture: return "The whole screen records everything on that monitor, not just the game.";
-      case Field.FrameRate: return "Steady 60 repeats a picture when nothing changed. Real frames only is smaller but some editors dislike it.";
-      default: return "High made recordings slower, not faster, in every test so far.";
+      case Field.Resolution: return "Scaling costs a little GPU time while a game runs.";
+      case Field.Capture: return "Game capture copies each frame inside the game, like OBS. Other programs fall back to window capture.";
+      case Field.Sound: return "The program's own sound leaves out Discord, music and everything else.";
+      case Field.Mic: return "With the mic on, recordings get three tracks: Mix, Game and Mic.";
+      default: return "High ranks the Recorder above other programs on the GPU.";
     }
   }
 
@@ -62,8 +64,9 @@ static class SettingChoices {
     switch (f) {
       case Field.Encoder: return s.Quality ? 1 : 0;
       case Field.Resolution: return s.MaxHeight == 1080 ? 1 : s.MaxHeight == 720 ? 2 : 0;
-      case Field.Capture: return s.Screen ? 1 : 0;
-      case Field.FrameRate: return s.Vfr ? 1 : 0;
+      case Field.Capture: return s.CaptureMethod == "window" ? 1 : s.CaptureMethod == "screen" ? 2 : 0;
+      case Field.Sound: return s.Sound == "pc" ? 1 : 0;
+      case Field.Mic: return s.WithMic ? 1 : 0;
       default: return s.GpuPriority == "high" ? 1 : 0;
     }
   }
@@ -73,13 +76,17 @@ static class SettingChoices {
     switch (f) {
       case Field.Encoder: s.EncoderProfile = index == 1 ? "quality" : "standard"; break;
       case Field.Resolution: s.MaxHeight = index == 1 ? 1080 : index == 2 ? 720 : 0; break;
-      case Field.Capture: s.CaptureMethod = index == 1 ? "screen" : "window"; break;
-      case Field.FrameRate: s.FrameRateMode = index == 1 ? "vfr" : "cfr"; break;
+      case Field.Capture: s.CaptureMethod = index == 1 ? "window" : index == 2 ? "screen" : "game"; break;
+      case Field.Sound: s.Sound = index == 1 ? "pc" : "game"; break;
+      case Field.Mic: s.Mic = index == 1 ? "on" : "off"; break;
       default: s.GpuPriority = index == 1 ? "high" : "normal"; break;
     }
   }
 
-  public static void Defaults(AppSettings s) { var d = new AppSettings(); s.EncoderProfile = d.EncoderProfile; s.MaxHeight = d.MaxHeight; s.CaptureMethod = d.CaptureMethod; s.FrameRateMode = d.FrameRateMode; s.GpuPriority = d.GpuPriority; }
+  public static void Defaults(AppSettings s) {
+    var d = new AppSettings();
+    s.EncoderProfile = d.EncoderProfile; s.MaxHeight = d.MaxHeight; s.CaptureMethod = d.CaptureMethod; s.Sound = d.Sound; s.Mic = d.Mic; s.GpuPriority = d.GpuPriority;
+  }
 }
 
 // BifrostRecorder.settings.json beside the program: Bifrost Suite writes it with DataFolder, the Recorder's work folder (and rewrites it whole on
@@ -97,15 +104,19 @@ static class Settings {
     } catch (Exception) { malformed = true; return null; }
   }
 
-  // The five choices of the Settings window, from a JSON object (settings.json or the prefs file). A value that isn't one of the known ones leaves that choice as it was.
+  static string Word(Dictionary<string, object> d, string key) { object v; return d.TryGetValue(key, out v) && v is string ? ((string)v).Trim().ToLowerInvariant() : null; }
+
+  // The six choices of the Settings window and the look, from a JSON object (settings.json or the prefs file). A value that isn't one of the known
+  // ones leaves that choice as it was. Keys from older versions (FrameRateMode, EncoderCheck) are ignored.
   static void ApplyChoices(Dictionary<string, object> d, AppSettings s) {
     object v;
-    string t;
-    if (d.TryGetValue("EncoderProfile", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "quality") s.EncoderProfile = "quality"; else if (t == "standard" || t == "gentle") s.EncoderProfile = "standard"; }   // "gentle" is the 0.1.1 name for the light set
-    if (d.TryGetValue("CaptureMethod", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "screen" || t == "window") s.CaptureMethod = t; }
-    if (d.TryGetValue("FrameRateMode", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "vfr" || t == "cfr") s.FrameRateMode = t; }
-    if (d.TryGetValue("GpuPriority", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "high" || t == "normal") s.GpuPriority = t; }
-    if (d.TryGetValue("Theme", out v) && v is string && Theming.Known(((string)v).Trim().ToLowerInvariant())) s.ThemeId = ((string)v).Trim().ToLowerInvariant();
+    string t = Word(d, "EncoderProfile");
+    if (t == "quality") s.EncoderProfile = "quality"; else if (t == "standard" || t == "gentle") s.EncoderProfile = "standard";   // "gentle" is the 0.1.1 name for the light set
+    t = Word(d, "CaptureMethod"); if (t == "game" || t == "window" || t == "screen") s.CaptureMethod = t;
+    t = Word(d, "Sound"); if (t == "game" || t == "pc") s.Sound = t;
+    t = Word(d, "Mic"); if (t == "on" || t == "off") s.Mic = t;
+    t = Word(d, "GpuPriority"); if (t == "high" || t == "normal") s.GpuPriority = t;
+    t = Word(d, "Theme"); if (t != null && Theming.Known(t)) s.ThemeId = t;
     if (d.TryGetValue("Accent", out v) && v != null && !(v is bool)) { string acc = Theming.NormalizeAccent(v); if (acc != "theme" || (v is string && ((string)v).Trim().ToLowerInvariant() == "theme")) s.Accent = acc; }
     if (d.TryGetValue("MaxHeight", out v) && v != null && !(v is bool) && !(v is string)) {
       try { int h = Convert.ToInt32(v, CultureInfo.InvariantCulture); if (h == 0 || (h >= 144 && h <= 8192)) s.MaxHeight = h; } catch (Exception) { }
@@ -125,9 +136,8 @@ static class Settings {
     }
     if (d.TryGetValue("TeamServer", out v) && v is string) s.TeamServer = ((string)v).Trim().TrimEnd('/');
     if (d.TryGetValue("TeamKey", out v) && v is string && ((string)v).Trim().Length > 0) s.TeamKey = ((string)v).Trim();
-    if (d.TryGetValue("EncoderCheck", out v) && v is string) { string ec = ((string)v).Trim().ToLowerInvariant(); if (ec == "record" || ec == "startup") s.EncoderCheck = ec; }
     if (d.TryGetValue("Hotkey", out v) && v is string && ((string)v).Trim().Length > 0) s.Hotkey = ((string)v).Trim();
-    if (d.TryGetValue("Cue", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "off") s.Cue = false;
+    if (Word(d, "Cue") == "off") s.Cue = false;
     ApplyChoices(d, s);
     return s;
   }
@@ -149,7 +159,7 @@ static class Settings {
     Directory.CreateDirectory(Path.GetDirectoryName(prefsFile));
     int hue;
     object accent = int.TryParse(s.Accent, NumberStyles.Integer, CultureInfo.InvariantCulture, out hue) ? (object)hue : s.Accent;
-    var d = new Dictionary<string, object> { { "EncoderProfile", s.EncoderProfile }, { "MaxHeight", s.MaxHeight }, { "CaptureMethod", s.CaptureMethod }, { "FrameRateMode", s.FrameRateMode }, { "GpuPriority", s.GpuPriority }, { "Theme", s.ThemeId }, { "Accent", accent } };
+    var d = new Dictionary<string, object> { { "EncoderProfile", s.EncoderProfile }, { "MaxHeight", s.MaxHeight }, { "CaptureMethod", s.CaptureMethod }, { "Sound", s.Sound }, { "Mic", s.Mic }, { "GpuPriority", s.GpuPriority }, { "Theme", s.ThemeId }, { "Accent", accent } };
     string tmp = prefsFile + ".tmp";
     File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
     if (File.Exists(prefsFile)) File.Delete(prefsFile);
@@ -212,7 +222,7 @@ static class FileNames {
     return program + " " + when.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture);
   }
 
-  // The base name, with " (2)", " (3)"... added when that name (as .mp4 or .mkv) is already there.
+  // The base name, with " (2)", " (3)"... added when that name (as .mp4, or an .mkv from an older version) is already there.
   public static string Unique(string folder, string baseName) {
     string name = baseName;
     for (int i = 2; File.Exists(Path.Combine(folder, name + ".mp4")) || File.Exists(Path.Combine(folder, name + ".mkv")); i++) name = baseName + " (" + i + ")";
@@ -220,61 +230,43 @@ static class FileNames {
   }
 }
 
-// One way of encoding. Everything after the capture and the 60 fps clock is here: the filters that make the frames what the
-// encoder wants, and the encoder's own options.
+// One video encoder of libobs, and the settings the Recorder gives it.
 class EncoderProfile {
-  public string Name;        // ffmpeg's encoder name
+  public string Name;        // libobs's encoder id
   public string Label;       // what the window shows
   public string Codec;       // what ffprobe calls the stream
   public bool Hardware;      // frames stay on the GPU all the way into the encoder
-  public bool Verified;      // run on real hardware here; false = arguments believed right, never run
-  public string Chain;       // filters after the 60 fps clock, each preceded by a comma
-  public string Note;
+  public bool Verified;      // run on real hardware here; false = settings believed right, never run
   public string Short;       // the header chip's name for it
 
-  // Every tag below describes the pixels the encoder is given. NVENC converts d3d11 BGRA frames itself and measured BT.601
-  // limited range (red = Y 81, Cb 90, Cr 240); tagging that BT.709 would shift every colour, so it is tagged as what it is.
-  // Primaries and transfer stay BT.709 (the screen's). The software path converts with swscale and does produce BT.709.
-  const string TagsGpu = "setparams=colorspace=smpte170m:range=tv:color_primaries=bt709:color_trc=bt709";
-  const string TagsCpu = "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709";
-
-  // The options go after "-map [v]". maxrate is in kilobits a second, scaled to the picture by FfmpegArgs.MaxrateKbps.
-  // NVENC has two sets. The default ("standard") asks little of the GPU: preset p4, no B-frames, no spatial AQ (it runs on the GPU's CUDA cores,
-  // which a game starves: measured 56 fps without it against 28 with it under Arma), no lookahead, a bufsize equal to the ceiling. "quality" is the
-  // older set for recording something that isn't a game: preset p5, spatial AQ, 2 B-frames with middle references, double bufsize, forced IDR keyframes.
-  public string Options(int maxrateKbps, int quality, bool qualitySet) {
-    string max = maxrateKbps + "k", buf = (maxrateKbps * 2) + "k", q = quality.ToString(CultureInfo.InvariantCulture);
+  // Constant quality with a ceiling (maxrate in kilobits a second, Sizes.MaxrateKbps) and a keyframe every 2 seconds. The light set (the default)
+  // asks little of the GPU: NVENC preset p4, no B-frames, no spatial AQ (it runs on the GPU's CUDA cores, which a game starves: measured 56 fps
+  // without it against 28 with it under Arma), no lookahead, one pass. qualitySet is the heavier one for recording something that isn't a game.
+  public Dictionary<string, object> Settings(int maxrateKbps, int quality, bool qualitySet) {
+    var d = new Dictionary<string, object> { { "keyint_sec", 2 } };
     switch (Name) {
-      case "hevc_nvenc":
-        if (!qualitySet)
-          return "-c:v hevc_nvenc -preset p4 -tune hq -profile:v main -rc vbr -cq " + q + " -b:v 0 -maxrate " + max + " -bufsize " + max +
-                 " -bf 0 -spatial-aq 0 -rc-lookahead 0 -multipass disabled -g 120";
-        // Constant quality with a ceiling: VBR with -cq and no average target, capped by maxrate.
-        return "-c:v hevc_nvenc -preset p5 -tune hq -profile:v main -rc vbr -cq " + q + " -b:v 0 -maxrate " + max + " -bufsize " + buf +
-               " -spatial-aq 1 -bf 2 -b_ref_mode middle -g 120 -forced-idr 1";
-      case "hevc_amf":   // UNTESTED: no AMD GPU here
-        return "-c:v hevc_amf -usage high_quality -quality high_quality -profile:v main -rc qvbr -qvbr_quality_level " + q + " -maxrate " + max + " -bufsize " + buf +
-               " -vbaq 1 -g 120";
-      case "hevc_qsv":   // UNTESTED unless Verified is set: the arguments are Intel's documented ones
-        return "-c:v hevc_qsv -preset slow -profile:v main -global_quality " + q + " -look_ahead 1 -maxrate " + max + " -bufsize " + buf + " -g 120 -forced_idr 1";
-      default:           // libx264: the way out when there's no hardware encoder
-        return "-c:v libx264 -preset veryfast -profile:v high -crf " + q + " -maxrate " + max + " -bufsize " + buf + " -g 120";
+      case "obs_nvenc_hevc_tex":
+        d["rate_control"] = "CQVBR"; d["target_quality"] = quality; d["max_bitrate"] = maxrateKbps; d["bitrate"] = maxrateKbps;
+        d["profile"] = "main"; d["tune"] = "hq"; d["preset"] = qualitySet ? "p5" : "p4"; d["multipass"] = qualitySet ? "qres" : "disabled";
+        d["bf"] = qualitySet ? 2 : 0; d["adaptive_quantization"] = qualitySet; d["lookahead"] = false;
+        break;
+      case "h265_texture_amf":   // UNTESTED: no AMD GPU here. QVBR's quality level is the "cqp" value.
+        d["rate_control"] = "QVBR"; d["cqp"] = quality; d["bitrate"] = maxrateKbps; d["profile"] = "main"; d["preset"] = qualitySet ? "quality" : "balanced"; d["bf"] = 0;
+        break;
+      case "obs_qsv11_hevc":     // UNTESTED: the frames live on the NVIDIA GPU here
+        d["rate_control"] = "ICQ"; d["icq_quality"] = quality; d["profile"] = "main"; d["target_usage"] = qualitySet ? "TU2" : "TU4"; d["bframes"] = qualitySet ? 2 : 0;
+        break;
+      default:                   // obs_x264: the way out when there's no hardware encoder
+        d["rate_control"] = "CRF"; d["crf"] = quality; d["preset"] = "veryfast"; d["profile"] = "high";
+        break;
     }
+    return d;
   }
 
-  public static readonly EncoderProfile Nvenc = new EncoderProfile {
-    Name = "hevc_nvenc", Short = "NVENC", Label = "NVIDIA NVENC, HEVC", Codec = "hevc", Hardware = true, Verified = true, Chain = "," + TagsGpu,
-    Note = "d3d11 frames straight into the encoder" };
-  public static readonly EncoderProfile Amf = new EncoderProfile {
-    Name = "hevc_amf", Short = "AMF", Label = "AMD AMF, HEVC", Codec = "hevc", Hardware = true, Verified = false, Chain = "," + TagsGpu,
-    Note = "UNTESTED: written from ffmpeg's documentation, never run on an AMD GPU" };
-  public static readonly EncoderProfile Qsv = new EncoderProfile {
-    Name = "hevc_qsv", Short = "QSV", Label = "Intel Quick Sync, HEVC", Codec = "hevc", Hardware = true, Verified = false, Chain = ",hwmap=derive_device=qsv,format=qsv," + TagsGpu,
-    Note = "UNTESTED: written from ffmpeg's documentation" };
-  public static readonly EncoderProfile Software = new EncoderProfile {
-    Name = "libx264", Short = "x264 CPU", Label = "Software, H.264 (uses the CPU)", Codec = "h264", Hardware = false, Verified = true,
-    Chain = ",hwdownload,format=bgra,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p," + TagsCpu,
-    Note = "frames come down to the CPU: only used when no GPU encoder works" };
+  public static readonly EncoderProfile Nvenc = new EncoderProfile { Name = "obs_nvenc_hevc_tex", Short = "NVENC", Label = "NVIDIA NVENC, HEVC", Codec = "hevc", Hardware = true, Verified = true };
+  public static readonly EncoderProfile Amf = new EncoderProfile { Name = "h265_texture_amf", Short = "AMF", Label = "AMD AMF, HEVC", Codec = "hevc", Hardware = true, Verified = false };
+  public static readonly EncoderProfile Qsv = new EncoderProfile { Name = "obs_qsv11_hevc", Short = "QSV", Label = "Intel Quick Sync, HEVC", Codec = "hevc", Hardware = true, Verified = false };
+  public static readonly EncoderProfile Software = new EncoderProfile { Name = "obs_x264", Short = "x264 CPU", Label = "Software, H.264 (uses the CPU)", Codec = "h264", Hardware = false, Verified = true };
 
   // The order they're tried in.
   public static readonly EncoderProfile[] Preference = { Nvenc, Amf, Qsv };
@@ -284,14 +276,17 @@ class EncoderProfile {
     return name == Software.Name ? Software : null;
   }
 
-  // The first GPU encoder the test accepts, else the software one. The test is handed in so this stays a pure decision.
-  public static EncoderProfile Pick(Func<EncoderProfile, bool> works) {
-    foreach (var e in Preference) if (works(e)) return e;
-    return Software;
+  // The encoders to try, in order, from the one picked: the hardware ones after it that libobs registered, then the software one.
+  public static List<EncoderProfile> FallbackChain(EncoderProfile first, ICollection<string> registered) {
+    var list = new List<EncoderProfile> { first };
+    int from = Array.IndexOf(Preference, first);
+    if (from >= 0) for (int i = from + 1; i < Preference.Length; i++) if (registered.Contains(Preference[i].Name)) list.Add(Preference[i]);
+    if (first != Software) list.Add(Software);
+    return list;
   }
 }
 
-static class FfmpegArgs {
+static class Sizes {
   public const int Fps = 60, Quality = 24;
 
   // About 30 Mb/s at 1920x1080, scaled by the number of pixels, never under 5 Mb/s.
@@ -300,20 +295,7 @@ static class FfmpegArgs {
     return (int)Math.Max(5000, Math.Round(k / 100.0) * 100);
   }
 
-  public static string Quote(string s) { return "\"" + s.Replace("\"", "\\\"") + "\""; }
-
-  // The capture itself: this window, at most 60 a second, the pointer drawn, no yellow border (the border option is what
-  // makes the capture the window's own area, without its title bar and frame), an even size (encoders need one).
-  public static string Source(long hwnd) { return Source(hwnd, 0, 0); }
-
-  // With a size (outWidth and outHeight above 0) the capture is scaled to fit that canvas, keeping its shape (resize_mode=scale_aspect,
-  // done by the capture filter itself on the GPU); with 0 it keeps the window's own size, rounded down to even.
-  public static string Source(long hwnd, int outWidth, int outHeight) {
-    string size = outWidth > 0 && outHeight > 0 ? "width=" + outWidth + ":height=" + outHeight : "width=-2:height=-2";
-    return "gfxcapture=hwnd=" + hwnd + ":max_framerate=" + Fps + ":capture_cursor=true:display_border=false:resize_mode=scale_aspect:" + size;
-  }
-
-  // The size of the video for a window of clientWidth x clientHeight and the MaxHeight setting: its own (even) size, or, when it is
+  // The size of the video for a picture of clientWidth x clientHeight and the MaxHeight setting: its own (even) size, or, when it is
   // taller than MaxHeight, scaled down to MaxHeight keeping its shape. scaled says which.
   public static void OutputSize(int clientWidth, int clientHeight, int maxHeight, out int width, out int height, out bool scaled) {
     scaled = maxHeight > 0 && clientHeight > maxHeight;
@@ -321,57 +303,57 @@ static class FfmpegArgs {
     height = Math.Max(2, maxHeight & ~1);
     width = Math.Max(2, (int)Math.Round(clientWidth * (double)height / clientHeight) & ~1);
   }
+}
 
-  // Record the window into a .mkv (which survives a crash). width and height are the window's size (its client area).
-  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv) { return Record(enc, hwnd, width, height, mkv, new AppSettings()); }
+// What libobs is asked to capture, and which sound goes on which track.
+static class Sources {
+  // libobs's source for each capture method.
+  public static string Id(string method) { return method == "window" ? "window_capture" : method == "screen" ? "monitor_capture" : "game_capture"; }
 
-  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv, AppSettings cfg) { return Record(enc, hwnd, width, height, mkv, cfg, null); }
+  // How OBS names a window in its settings: "title:class:program.exe", with # and : in each part written #22 and #3A (libobs window-helpers.c).
+  public static string WindowSpec(string title, string className, string exeName) { return Enc(title) + ":" + Enc(className) + ":" + Enc(exeName); }
+  static string Enc(string s) { return (s ?? "").Replace("#", "#22").Replace(":", "#3A"); }
 
-  // Frame timing. cfr: the fps filter and -fps_mode cfr make a frame every 1/60 s, repeating the last one when the picture hasn't changed.
-  // vfr: no fps filter and -fps_mode passthrough: only frames that really arrived, each with its capture time (the capture time base is
-  // 1/10,000,000). ffmpeg would round those times to the 1/60 grid (the encoder time base defaults to 1/frame rate), so -enc_time_base
-  // filter keeps them exact. -r 60 is NOT used: ffmpeg refuses it with passthrough ("-r ... together with a non-CFR -fps_mode ... is
-  // contradictory"), and the capture filters already tell the encoder 60 fps, so it doesn't derive a rate from the time base.
-  public const string CfrSync = "-fps_mode cfr", VfrSync = "-fps_mode passthrough -enc_time_base filter";
+  public const int MatchExe = 2;   // enum window_priority: the same program first, then the title
 
-  // screen: when cfg.Screen, the whole monitor the window is on, by ddagrab (frames stay Direct3D 11 into the encoder, the pointer drawn);
-  // the DXGI adapter is chosen with -init_hw_device because ddagrab's output_idx counts the outputs of the device's own adapter.
-  // MaxHeight can't apply there (ddagrab can't scale, and scale_d3d11 doesn't work on this PC), so the video is the monitor's size.
-  // In vfr mode ddagrab is told dup_frames=false, so it sends only real desktop updates instead of repeating frames itself.
-  public static string Record(EncoderProfile enc, long hwnd, int width, int height, string mkv, AppSettings cfg, DxgiOutput screen) {
-    int ow, oh; bool scaled = false;
-    string hw = "", source;
-    if (cfg.Screen && screen != null) {
-      ow = Math.Max(2, screen.Width & ~1); oh = Math.Max(2, screen.Height & ~1);
-      hw = "-init_hw_device d3d11va=dda:" + screen.Adapter + " -filter_hw_device dda ";
-      source = "ddagrab=output_idx=" + screen.Output + ":framerate=" + Fps + ":draw_mouse=true" + (cfg.Vfr ? ":dup_frames=false" : "");
-    } else {
-      OutputSize(width, height, cfg.MaxHeight, out ow, out oh, out scaled);
-      source = scaled ? Source(hwnd, ow, oh) : Source(hwnd);
-    }
-    return "-hide_banner -loglevel warning -y -nostats -progress pipe:1 -stats_period 0.25 " + hw +
-           "-filter_complex " + Quote(source + (cfg.Vfr ? "" : ",fps=" + Fps) + enc.Chain + "[v]") + " -map \"[v]\" " +
-           enc.Options(MaxrateKbps(ow, oh), Quality, cfg.Quality) + " " + (cfg.Vfr ? VfrSync : CfrSync) + " -flush_packets 1 " + Quote(mkv);
+  // The capture's settings. The cursor is drawn; game capture uses OBS's own defaults for everything else, its anti-cheat compatibility hook included.
+  // Window and screen capture ask Windows for SDR pictures (force_sdr): on an HDR monitor Windows otherwise hands over 16-bit float, which
+  // libobs tone-maps at its own white level, not the monitor's (cyan came back 136,209,206 on this PC's HDR monitor); the video is SDR anyway.
+  public static Dictionary<string, object> VideoSettings(string method, string windowSpec, string monitorDevice) {
+    var d = new Dictionary<string, object>();
+    if (method == "screen") { d["monitor_id"] = monitorDevice; d["capture_cursor"] = true; d["method"] = 0; d["force_sdr"] = true; }
+    else if (method == "window") { d["window"] = windowSpec; d["priority"] = MatchExe; d["method"] = 2; d["cursor"] = true; d["client_area"] = true; d["force_sdr"] = true; }   // 2 = Windows Graphics Capture
+    else { d["capture_mode"] = "window"; d["window"] = windowSpec; d["priority"] = MatchExe; d["capture_cursor"] = true; d["anti_cheat_hook"] = true; }
+    return d;
   }
 
-  // mkv to mp4 without re-encoding. hvc1 is the HEVC tag players on Windows, Mac and the web all open.
-  public static string Remux(EncoderProfile enc, string mkv, string mp4) {
-    return "-hide_banner -loglevel error -nostdin -y -i " + Quote(mkv) + " -map 0:v:0 -c copy " + (enc.Codec == "hevc" ? "-tag:v hvc1 " : "") +
-           "-movflags +faststart " + Quote(mp4);
+  // The audio tracks, in the file's order. With the mic: Mix (what players and the Armory play), the program's sound, the mic. Without: one track.
+  public static string[] TrackNames(AppSettings c) {
+    string sound = c.Sound == "pc" ? "PC sound" : "Game";
+    return c.WithMic ? new[] { "Mix", sound, "Mic" } : new[] { sound };
   }
 
-  public static string Probe(string file, bool countFrames) {
-    return "-v error " + (countFrames ? "-count_frames " : "") + "-select_streams v:0 -show_entries stream=codec_name,profile,width,height,r_frame_rate,avg_frame_rate,nb_frames,nb_read_frames,pix_fmt," +
-           "color_range,color_space,color_transfer,color_primaries,codec_tag_string:format=duration,size -of json " + Quote(file);
-  }
+  // Which tracks a source feeds (bit 0 = the first track).
+  public static uint SoundMixers(AppSettings c) { return c.WithMic ? 1u | 2u : 1u; }
+  public static uint MicMixers(AppSettings c) { return c.WithMic ? 1u | 4u : 0u; }
+}
 
-  // A half-second encode with the encoder's own options and chain, from a made-up picture uploaded to the GPU the same way
-  // the capture's frames are. It proves the encoder, its options and the filters work on this PC; it captures nothing.
-  public static string TestEncode(EncoderProfile enc) {
-    string hw = enc.Hardware ? "-init_hw_device d3d11va=d3d -filter_hw_device d3d " : "";
-    string chain = enc.Hardware ? "format=bgra,hwupload" + enc.Chain : "format=bgra" + enc.Chain.Replace(",hwdownload,format=bgra", "");
-    return "-hide_banner -loglevel error -nostdin -y " + hw + "-f lavfi -i color=c=0x303840:s=640x360:r=60:d=0.5 -vf " + Quote(chain) + " " +
-           enc.Options(MaxrateKbps(640, 360), Quality, false) + " -f null -";
+// When the capture hasn't sent a picture yet. The whole start is capped at 15 s, so HookMs + PictureMs stays under it.
+static class CaptureChoice {
+  public const int HookMs = 6000;      // game capture: OBS retries a hook every 2 s (FakeGame hooked on the second try, 2.1 s): three tries
+  public const int PictureMs = 5000;   // window and screen capture send their first picture within a second when they can
+  public const int MinimizedMs = 3000; // a minimized window draws nothing until it is restored, whatever the capture
+
+  // Asked about every 50 ms while a recording starts and the capture has sent no picture.
+  //   method    the capture now in use: "game", "window" or "screen"
+  //   waitedMs  how long that capture has been waiting for its first picture
+  //   minimized the window is minimized
+  // Returns null to keep waiting, another method to switch to (the wait then starts again for it), or "fail" to give up with an error.
+  // Never "screen": that would record the whole monitor without being asked.
+  public static string WhenNoPicture(string method, int waitedMs, bool minimized) {
+    if (minimized) return waitedMs >= MinimizedMs ? "fail" : null;
+    if (method == "game") return waitedMs >= HookMs ? "window" : null;   // nothing to hook (not Direct3D, OpenGL or Vulkan): the window as Windows sees it
+    return waitedMs >= PictureMs ? "fail" : null;
   }
 }
 

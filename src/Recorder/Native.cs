@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Windows calls the Recorder needs: the list of windows that can be recorded, and the Job Object that keeps every child
-// process (ffmpeg, ffprobe) from outliving the Recorder, even after a crash. C# 5 for Windows' own compiler.
+// Windows calls the Recorder needs: the list of windows that can be recorded, and the Job Object that keeps every child process the
+// tests start (ffprobe, test programs) from outliving them, even after a crash. C# 5 for Windows' own compiler.
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -235,9 +235,9 @@ static class Proc {
   }
 }
 
-// How the GPU's scheduler ranks a process against others (what OBS does for itself): an encoder starved by a game that keeps the GPU
-// at 100% falls behind, so ffmpeg is ranked above normal. HIGH first, ABOVE_NORMAL if that is refused, never REALTIME (that needs
-// administrator rights and can freeze the PC). The CPU priority is left alone.
+// How the GPU's scheduler ranks a process against others: with GpuPriority high the Recorder (where libobs draws and encodes) is ranked
+// above normal. HIGH first, ABOVE_NORMAL if that is refused, never REALTIME (that needs administrator rights and can freeze the PC). The CPU
+// priority is left alone.
 static class GpuScheduling {
   [DllImport("gdi32.dll")] static extern int D3DKMTSetProcessSchedulingPriorityClass(IntPtr process, int priority);
   [DllImport("gdi32.dll")] static extern int D3DKMTGetProcessSchedulingPriorityClass(IntPtr process, out int priority);
@@ -265,5 +265,11 @@ static class GpuScheduling {
       }
     }
     return -1;
+  }
+
+  // Back to one class (NORMAL after a recording that raised it).
+  public static void Set(IntPtr process, int cls, Action<string> log) {
+    try { int status = D3DKMTSetProcessSchedulingPriorityClass(process, cls); log("D3DKMTSetProcessSchedulingPriorityClass(" + Name(cls) + ") = " + Hex(status)); }
+    catch (Exception ex) { log("D3DKMTSetProcessSchedulingPriorityClass is not available: " + ex.GetType().Name); }
   }
 }

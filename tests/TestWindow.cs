@@ -97,10 +97,13 @@ class TestWindow : Form {
     return win;
   }
 
-  public void CloseWindow() {
+  public void CloseWindow() { CloseWindow(null); }
+
+  // step, when given, hears each stage of closing (the window tests time them).
+  public void CloseWindow(Action<string> step) {
     stopping = true;
-    try { if (loop != null) loop.Join(3000); } catch (Exception) { }
-    try { Invoke(new MethodInvoker(Close)); } catch (Exception) { }
+    try { if (loop != null) { bool joined = loop.Join(3000); if (step != null) step(joined ? "frame loop ended" : "frame loop still running after 3 s"); } } catch (Exception) { }
+    try { Invoke(new MethodInvoker(Close)); if (step != null) step("window closed"); } catch (Exception ex) { if (step != null) step("close failed: " + ex.Message); }
   }
 
   protected override bool ShowWithoutActivation { get { return true; } }
