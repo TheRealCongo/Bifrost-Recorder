@@ -230,6 +230,7 @@ static class RecorderTests {
     Check("the live window list is well formed (count only; titles are not printed)", sane, found.Count + " windows");
 
     UnitsM1b(tmp);
+    GpuPriorityApiTest();
     JobTest();
     if (gpu) EncoderTest();
   }
@@ -345,6 +346,20 @@ static class RecorderTests {
       t.Tick(now);
     }
     return t;
+  }
+
+  // The GPU-priority call, tried on a child that does no GPU work at all (ffmpeg making a test pattern for nothing): what the PC answers
+  // for HIGH and ABOVE_NORMAL without administrator rights. The same call is made on the real recording's ffmpeg in the end-to-end test.
+  static void GpuPriorityApiTest() {
+    var p = Proc.Start(Ffmpeg.Exe, "-hide_banner -loglevel error -re -f lavfi -i testsrc=size=160x120:rate=10 -t 20 -f null -", true);
+    try {
+      Thread.Sleep(400);
+      var lines = new List<string>();
+      int got = GpuScheduling.Try(p.Handle, delegate(string s) { lines.Add(s); });
+      foreach (string l in lines) Note("gpu priority (CPU-only child): " + l);
+      Check("the GPU priority call exists and answers with an NTSTATUS for HIGH (no exception)", lines.Count >= 1 && lines[0].Contains("(HIGH) = 0x"), lines.Count > 0 ? lines[0] : "no lines");
+      Note("result: " + (got == GpuScheduling.High ? "HIGH accepted without administrator rights" : got == GpuScheduling.AboveNormal ? "HIGH refused, ABOVE_NORMAL accepted" : "both refused or unavailable"));
+    } finally { try { if (!p.HasExited) p.Kill(); p.WaitForExit(3000); } catch (Exception) { } }
   }
 
   // A process that is killed outright (what a crash looks like) must take its ffmpeg with it: the Job Object.
