@@ -48,6 +48,31 @@ Both are in `BifrostRecorder.settings.json`, not in the UI; the chip shows them 
   has time base 1/16000, `avg_frame_rate` is the real average (48 fps) and `r_frame_rate` is a meaningless guess (16000/1). Studio reads `avg_frame_rate` first (Z:\BFStudio\main.js:108),
   so it shows 48.0 fps. Telemetry is unchanged: speed is still the written video's time (`out_time_us`) against the clock; a window that sends nothing is "Waiting for the
   window to draw", never "Falling behind". Unit tests check the exact arguments of all four combinations (window or screen, cfr or vfr), the chip, the refusal paths and these ffmpeg behaviours.
+
+### 0.1.3 and what the evening's live tests showed (2026-10-17)
+
+**GPU hangs, honestly.** Arma Reforger crashed with DXGI_ERROR_DEVICE_HUNG at 19:38:18 and 19:41:19 (during my test runs: NVENC sessions started next to the game),
+at **23:09:50 with nothing of ours running** (Recorder idle, no ffmpeg; nvlddmkm id 153 logged at 23:09:44, 46 and 49), and at 23:29:13: my `--ui` test run
+started at 23:29:05 opened a Recorder window whose startup encoder check is a 0.5 s NVENC test encode, and id 153 was logged at 23:29:08, 08, 10 and 13. So this PC resets its driver by itself too,
+but a GPU encoder session started next to a running game is a trigger we have produced more than once. Consequences: every test mode that can touch the GPU, including `--ui`, now goes through the
+game guard and checks the System log for nvlddmkm afterwards (exit 9 on a hit); the Recorder's encoder is now chosen **without a test encode** by default (`EncoderCheck` = vendor).
+
+**What the measurements said** (the orchestrator's diagnostics against real Arma at 2560x1440, about 60 fps, normal GPU priority): window capture alone 58 fps (capture is fine, so the independent-flip
+idea was wrong); NVENC with spatial AQ 22 fps; without AQ 53 to 56 fps at any preset; B-frames cost about 5%; scaling inside gfxcapture 28 fps; every run with **GPU priority HIGH** was catastrophic
+(2 to 3 fps). So the defaults are now: Light encoder (p4, no AQ, no B-frames, no lookahead, bufsize = ceiling), Native size, This window, Steady 60 fps, GPU priority **normal**, EncoderCheck vendor.
+Scaling (1080p, 720p) is documented in the Settings window as costly while a game runs; the older AQ set remains as "Quality, for desktop apps only".
+
+**Settings window and prefs (0.1.3).** Bifrost Suite rewrites `BifrostRecorder.settings.json` **whole** on every install and update (Bifrost-Hub src/Hub/Core.cs, `WriteSettingsFile`, for apps with a
+SettingsFile and no KeyFile), so a choice kept there would vanish. The member's choices therefore live in `<DataFolder>\Recorder.prefs.json` (without a DataFolder: `%LOCALAPPDATA%\Bifrost Recorder\prefs.json`),
+written at once on every change; precedence is prefs, then the experiment keys in settings.json, then the defaults; a damaged prefs file is ignored with a status-line note. The five choices and the look (theme id
+and accent) are saved there. The look is a C# port of Bifrost Scribe's `src/shared/theme.ts`: the same five presets with the same token values, the same accent maths (HSV, hue 0 to 359, Studio's swatches,
+white and black), on-accent text by contrast; unit tests check the values against theme.ts's maths. Two additions of mine: the amber of "Falling behind" comes from Planner's presets (Scribe has no
+warning token), and the accent used as text or a thin line falls back to the text colour when it would not read (white accent on Paper). The default accent is now the preset's own (Console's amber), so the
+Recorder's UI no longer defaults to lime; the app icon is unchanged.
+
+**Findings to act on elsewhere.** (1) The Hub writes `BifrostRecorder.settings.json` with only `ManagedBy` and `DataFolder` (the recorder's catalog entry has SettingsFile, no KeyFile), so the Recorder never
+receives `TeamServer`/`TeamKey` from Bifrost Suite: the Upload to Armory button opens the website until the catalog entry is changed to a KeyFile (which merges, as for Planner). (2) Ctrl+Alt+R is already
+registered by another program on this PC (Win32 error 1409), so the Recorder falls back to Ctrl+Alt+Shift+R when the default is taken and shows the key it actually registered.
    to 30 s to finish after `q` (10 s otherwise) before any kill; the window says `Finishing…  N s of video still to write`.
 ## Live test (M1): for Congo
 

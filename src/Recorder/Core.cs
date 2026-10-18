@@ -7,52 +7,152 @@ using System.IO;
 using System.Text;
 using System.Web.Script.Serialization;
 
-// What BifrostRecorder.settings.json holds. DataFolder is Bifrost Suite's; the other three are experiment switches, not shown in
-// the window (the header chip shows the active set): EncoderProfile standard (the light default) | quality (the older set; "gentle" in an older settings file means standard), MaxHeight 0 (native) | 720 | 1080 ... (scaling is costly under a game),, GpuPriority high | normal.
+// The choices a recording is made with. They come from, in order of weight: the member's own choices in the Settings window (the prefs file),
+// the experiment keys in BifrostRecorder.settings.json, and the defaults below (what the live tests showed works best under a game).
 class AppSettings {
-  public string DataFolder;                  // null when the file gave none
+  public string DataFolder;                  // null when the file gave none (Bifrost Suite's)
   public string TeamServer, TeamKey;         // the Armory, from the same file Bifrost Suite writes for Planner; the key is never shown, logged or written by the Recorder
-  public string EncoderProfile = "standard";
-  public int MaxHeight;                      // 0 = record at the window's own size
-  public string GpuPriority = "high";
+  // ---- the five choices of the Settings window
+  public string EncoderProfile = "standard"; // standard = the light NVENC set, best for games | quality = the older set with spatial AQ and B-frames, for desktop apps
+  public int MaxHeight;                      // 0 = record at the window's own size | 1080 | 720 (scaling costs performance while a game runs)
   public string CaptureMethod = "window";    // window (gfxcapture) | screen (ddagrab, the whole monitor the window is on)
   public string FrameRateMode = "cfr";       // cfr (a frame every 1/60 s, repeats filling gaps) | vfr (only real frames, with their real times)
-  public bool Quality { get { return EncoderProfile == "quality"; } }   // the older AQ and B-frame set, for recording what isn't a game
+  public string GpuPriority = "normal";      // the GPU scheduling class asked for ffmpeg: normal (leave it) | high (HIGH, else ABOVE_NORMAL; far slower in the live tests)
+  public string ThemeId = "console";         // the look (Theme.cs): console | midnight | od-green | paper | high-contrast
+  public string Accent = "theme";            // the accent on top of it: theme (the preset's own hue) | a hue 0-359 | white | black
+  // ---- settings.json only
+  public string Hotkey = "Ctrl+Alt+R";       // the global start/stop key ("off" for none)
+  public bool Cue = true;                    // a short beep on start and stop (they are not part of what's recorded)
+  public string EncoderCheck = "vendor";     // how the encoder is chosen: vendor (no test encode: by the GPU's maker, the next encoder if the real start fails) | record (a tiny test encode at the first Record) | startup (the same, as the window opens)
+  public bool Quality { get { return EncoderProfile == "quality"; } }
   public bool Screen { get { return CaptureMethod == "screen"; } }
   public bool Vfr { get { return FrameRateMode == "vfr"; } }
+  public AppSettings Clone() { return (AppSettings)MemberwiseClone(); }
 }
 
-// BifrostRecorder.settings.json beside the program: Bifrost Suite writes it with DataFolder, the Recorder's work folder.
+// The Settings window's choices, as plain labels, and what each one sets. Pure, so the tests can check the mapping.
+static class SettingChoices {
+  public enum Field { Encoder, Resolution, Capture, FrameRate, Gpu }
+
+  public static readonly string[] Fields = { "ENCODER", "RESOLUTION", "CAPTURE", "FRAME RATE", "GPU PRIORITY" };
+
+  public static string[] Labels(Field f) {
+    switch (f) {
+      case Field.Encoder: return new[] { "Light, best for games", "Quality, for desktop apps only (heavier on the GPU)" };
+      case Field.Resolution: return new[] { "Native", "1080p", "720p" };
+      case Field.Capture: return new[] { "This window", "The whole screen it's on" };
+      case Field.FrameRate: return new[] { "Steady 60 fps, best for editing", "Only real frames (variable)" };
+      default: return new[] { "Normal", "High (not recommended with games)" };
+    }
+  }
+
+  public static string Hint(Field f) {
+    switch (f) {
+      case Field.Encoder: return "Light keeps the game's frame rate. Quality looks a little better but asks much more of the GPU.";
+      case Field.Resolution: return "Scaling costs performance while a game runs.";
+      case Field.Capture: return "The whole screen records everything on that monitor, not just the game.";
+      case Field.FrameRate: return "Steady 60 repeats a picture when nothing changed. Real frames only is smaller but some editors dislike it.";
+      default: return "High made recordings slower, not faster, in every test so far.";
+    }
+  }
+
+  // Which label is chosen now.
+  public static int Get(AppSettings s, Field f) {
+    switch (f) {
+      case Field.Encoder: return s.Quality ? 1 : 0;
+      case Field.Resolution: return s.MaxHeight == 1080 ? 1 : s.MaxHeight == 720 ? 2 : 0;
+      case Field.Capture: return s.Screen ? 1 : 0;
+      case Field.FrameRate: return s.Vfr ? 1 : 0;
+      default: return s.GpuPriority == "high" ? 1 : 0;
+    }
+  }
+
+  // Chooses a label. A MaxHeight set by hand in the settings file to some other height shows as Native until a choice is made.
+  public static void Set(AppSettings s, Field f, int index) {
+    switch (f) {
+      case Field.Encoder: s.EncoderProfile = index == 1 ? "quality" : "standard"; break;
+      case Field.Resolution: s.MaxHeight = index == 1 ? 1080 : index == 2 ? 720 : 0; break;
+      case Field.Capture: s.CaptureMethod = index == 1 ? "screen" : "window"; break;
+      case Field.FrameRate: s.FrameRateMode = index == 1 ? "vfr" : "cfr"; break;
+      default: s.GpuPriority = index == 1 ? "high" : "normal"; break;
+    }
+  }
+
+  public static void Defaults(AppSettings s) { var d = new AppSettings(); s.EncoderProfile = d.EncoderProfile; s.MaxHeight = d.MaxHeight; s.CaptureMethod = d.CaptureMethod; s.FrameRateMode = d.FrameRateMode; s.GpuPriority = d.GpuPriority; }
+}
+
+// BifrostRecorder.settings.json beside the program: Bifrost Suite writes it with DataFolder, the Recorder's work folder (and rewrites it whole on
+// every install or update, so a choice kept there would be lost: the member's own choices are kept in the prefs file instead).
 static class Settings {
   public const string FileName = "BifrostRecorder.settings.json";
 
-  static Dictionary<string, object> Read(string settingsFile) {
+  static Dictionary<string, object> Read(string file, out bool malformed) {
+    malformed = false;
     try {
-      if (settingsFile == null || !File.Exists(settingsFile)) return null;
-      return new JavaScriptSerializer().DeserializeObject(File.ReadAllText(settingsFile)) as Dictionary<string, object>;
-    } catch (Exception) { return null; }
+      if (file == null || !File.Exists(file)) return null;
+      var d = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(file)) as Dictionary<string, object>;
+      if (d == null) malformed = true;
+      return d;
+    } catch (Exception) { malformed = true; return null; }
   }
 
-  // Everything in the file; a missing file, bad JSON or an unusable value gives that setting's default.
+  // The five choices of the Settings window, from a JSON object (settings.json or the prefs file). A value that isn't one of the known ones leaves that choice as it was.
+  static void ApplyChoices(Dictionary<string, object> d, AppSettings s) {
+    object v;
+    string t;
+    if (d.TryGetValue("EncoderProfile", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "quality") s.EncoderProfile = "quality"; else if (t == "standard" || t == "gentle") s.EncoderProfile = "standard"; }   // "gentle" is the 0.1.1 name for the light set
+    if (d.TryGetValue("CaptureMethod", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "screen" || t == "window") s.CaptureMethod = t; }
+    if (d.TryGetValue("FrameRateMode", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "vfr" || t == "cfr") s.FrameRateMode = t; }
+    if (d.TryGetValue("GpuPriority", out v) && v is string) { t = ((string)v).Trim().ToLowerInvariant(); if (t == "high" || t == "normal") s.GpuPriority = t; }
+    if (d.TryGetValue("Theme", out v) && v is string && Theming.Known(((string)v).Trim().ToLowerInvariant())) s.ThemeId = ((string)v).Trim().ToLowerInvariant();
+    if (d.TryGetValue("Accent", out v) && v != null && !(v is bool)) { string acc = Theming.NormalizeAccent(v); if (acc != "theme" || (v is string && ((string)v).Trim().ToLowerInvariant() == "theme")) s.Accent = acc; }
+    if (d.TryGetValue("MaxHeight", out v) && v != null && !(v is bool) && !(v is string)) {
+      try { int h = Convert.ToInt32(v, CultureInfo.InvariantCulture); if (h == 0 || (h >= 144 && h <= 8192)) s.MaxHeight = h; } catch (Exception) { }
+    }
+  }
+
+  // Everything in the settings file; a missing file, bad JSON or an unusable value gives that setting's default.
   public static AppSettings Load(string settingsFile) {
     var s = new AppSettings();
-    var d = Read(settingsFile);
+    bool bad;
+    var d = Read(settingsFile, out bad);
     if (d == null) return s;
     object v;
     if (d.TryGetValue("DataFolder", out v) && v is string) {
       string folder = ((string)v).Trim();
       if (folder.Length > 0 && folder.IndexOfAny(Path.GetInvalidPathChars()) < 0 && Path.IsPathRooted(folder)) s.DataFolder = folder;
     }
-    if (d.TryGetValue("EncoderProfile", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "quality") s.EncoderProfile = "quality";   // "gentle" (the 0.1.1 name for the light set) and anything else is standard
     if (d.TryGetValue("TeamServer", out v) && v is string) s.TeamServer = ((string)v).Trim().TrimEnd('/');
     if (d.TryGetValue("TeamKey", out v) && v is string && ((string)v).Trim().Length > 0) s.TeamKey = ((string)v).Trim();
-    if (d.TryGetValue("CaptureMethod", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "screen") s.CaptureMethod = "screen";
-    if (d.TryGetValue("FrameRateMode", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "vfr") s.FrameRateMode = "vfr";
-    if (d.TryGetValue("GpuPriority", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "normal") s.GpuPriority = "normal";
-    if (d.TryGetValue("MaxHeight", out v) && v != null && !(v is bool) && !(v is string)) {
-      try { int h = Convert.ToInt32(v, CultureInfo.InvariantCulture); if (h >= 144 && h <= 8192) s.MaxHeight = h; } catch (Exception) { }
-    }
+    if (d.TryGetValue("EncoderCheck", out v) && v is string) { string ec = ((string)v).Trim().ToLowerInvariant(); if (ec == "record" || ec == "startup") s.EncoderCheck = ec; }
+    if (d.TryGetValue("Hotkey", out v) && v is string && ((string)v).Trim().Length > 0) s.Hotkey = ((string)v).Trim();
+    if (d.TryGetValue("Cue", out v) && v is string && ((string)v).Trim().ToLowerInvariant() == "off") s.Cue = false;
+    ApplyChoices(d, s);
     return s;
+  }
+
+  // The settings file, then the member's own choices on top of it (the prefs file; a choice there wins over the same key in the settings file).
+  // problem is set when the prefs file exists but can't be read: it is then ignored, the rest stands, and nothing throws.
+  public static AppSettings LoadAll(string settingsFile, string prefsFile, out string problem) {
+    var s = Load(settingsFile);
+    problem = null;
+    bool bad;
+    var d = Read(prefsFile, out bad);
+    if (bad) problem = "Your saved choices couldn't be read, so the defaults are used until you change a setting.";
+    else if (d != null) ApplyChoices(d, s);
+    return s;
+  }
+
+  // The member's choices, written beside the Recorder's other data, never in the file Bifrost Suite rewrites. Throws on a disk error (the caller says so).
+  public static void SavePrefs(string prefsFile, AppSettings s) {
+    Directory.CreateDirectory(Path.GetDirectoryName(prefsFile));
+    int hue;
+    object accent = int.TryParse(s.Accent, NumberStyles.Integer, CultureInfo.InvariantCulture, out hue) ? (object)hue : s.Accent;
+    var d = new Dictionary<string, object> { { "EncoderProfile", s.EncoderProfile }, { "MaxHeight", s.MaxHeight }, { "CaptureMethod", s.CaptureMethod }, { "FrameRateMode", s.FrameRateMode }, { "GpuPriority", s.GpuPriority }, { "Theme", s.ThemeId }, { "Accent", accent } };
+    string tmp = prefsFile + ".tmp";
+    File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
+    if (File.Exists(prefsFile)) File.Delete(prefsFile);
+    File.Move(tmp, prefsFile);
   }
 
   // DataFolder from the settings file, or null when the file is missing, isn't JSON, or holds no usable absolute folder.
@@ -71,7 +171,15 @@ static class Settings {
     if (data != null) return Path.Combine(data, "logs");
     return Path.Combine(localAppData, "Bifrost Recorder", "logs");
   }
+
+  // <DataFolder>\Recorder.prefs.json, or %LOCALAPPDATA%\Bifrost Recorder\prefs.json without one.
+  public static string PrefsFile(string settingsFile, string localAppData) {
+    string data = DataFolder(settingsFile);
+    if (data != null) return Path.Combine(data, "Recorder.prefs.json");
+    return Path.Combine(localAppData, "Bifrost Recorder", "prefs.json");
+  }
 }
+
 static class FileNames {
   // The program's friendly name for the file name, from the exe's version info (its FileDescription, e.g. "Arma Reforger").
   public static string Friendly(string exePath, string windowTitle) {
@@ -263,5 +371,36 @@ static class FfmpegArgs {
     string chain = enc.Hardware ? "format=bgra,hwupload" + enc.Chain : "format=bgra" + enc.Chain.Replace(",hwdownload,format=bgra", "");
     return "-hide_banner -loglevel error -nostdin -y " + hw + "-f lavfi -i color=c=0x303840:s=640x360:r=60:d=0.5 -vf " + Quote(chain) + " " +
            enc.Options(MaxrateKbps(640, 360), Quality, false) + " -f null -";
+  }
+}
+
+// The global start/stop key: "Ctrl+Alt+R" style text to RegisterHotKey's modifiers and virtual key. At least one modifier is required (a
+// bare letter as a global key would swallow it everywhere).
+static class Hotkeys {
+  public const uint Alt = 1, Control = 2, Shift = 4, Win = 8;
+  public const string Default = "Ctrl+Alt+R", Fallback = "Ctrl+Alt+Shift+R";   // the fallback only when the default is taken by another program
+
+  // false (with the default filled in) when the text isn't usable. normalized is the text to show: "CTRL+ALT+R".
+  public static bool TryParse(string text, out uint mods, out uint vk, out string normalized) {
+    mods = 0; vk = 0; normalized = null;
+    if (string.IsNullOrWhiteSpace(text)) return false;
+    var shown = new List<string>();
+    foreach (string raw in text.Split('+')) {
+      string t = raw.Trim().ToLowerInvariant();
+      if (t.Length == 0) return false;
+      if (t == "ctrl" || t == "control") { if ((mods & Control) != 0) return false; mods |= Control; shown.Add("CTRL"); }
+      else if (t == "alt") { if ((mods & Alt) != 0) return false; mods |= Alt; shown.Add("ALT"); }
+      else if (t == "shift") { if ((mods & Shift) != 0) return false; mods |= Shift; shown.Add("SHIFT"); }
+      else if (t == "win" || t == "windows") { if ((mods & Win) != 0) return false; mods |= Win; shown.Add("WIN"); }
+      else {
+        if (vk != 0) return false;   // one key
+        if (t.Length == 1 && ((t[0] >= 'a' && t[0] <= 'z') || (t[0] >= '0' && t[0] <= '9'))) { vk = (uint)char.ToUpperInvariant(t[0]); shown.Add(t.ToUpperInvariant()); }
+        else if (t[0] == 'f' && t.Length <= 3) { int n; if (!int.TryParse(t.Substring(1), out n) || n < 1 || n > 24) return false; vk = (uint)(0x70 + n - 1); shown.Add("F" + n); }
+        else return false;
+      }
+    }
+    if (vk == 0 || mods == 0) return false;
+    normalized = string.Join("+", shown.ToArray());
+    return true;
   }
 }

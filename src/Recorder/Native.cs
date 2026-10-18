@@ -194,6 +194,14 @@ static class Jobs {
 // Starts a program the way the Recorder always does: no window of any kind, every stream redirected, inside the job.
 static class Proc {
   public static readonly List<int> Started = new List<int>();   // every pid started here, for the tests' watcher
+  static readonly List<Process> StartedProcesses = new List<Process>();   // the same processes, kept so "still running" can't be fooled by a reused pid
+
+  // How many of the processes started here are still running.
+  public static int StillRunning() {
+    int n = 0;
+    lock (Started) foreach (var p in StartedProcesses) { try { if (!p.HasExited) n++; } catch (Exception) { } }
+    return n;
+  }
 
   public static Process Start(string exe, string args, bool redirectInput) {
     var psi = new ProcessStartInfo(exe, args) {
@@ -204,7 +212,7 @@ static class Proc {
     };
     var p = Process.Start(psi);
     try { Jobs.Add(p); } catch (Exception) { try { p.Kill(); } catch (Exception) { } throw; }
-    lock (Started) Started.Add(p.Id);
+    lock (Started) { Started.Add(p.Id); StartedProcesses.Add(p); }
     if (!redirectInput) { try { p.StandardInput.Close(); } catch (Exception) { } }
     return p;
   }

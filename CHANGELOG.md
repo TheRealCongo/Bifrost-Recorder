@@ -1,5 +1,12 @@
 # Bifrost Recorder changelog
 
+## 0.1.3
+- A Settings window (the Settings button by Refresh): Light or Quality encoder, Native, 1080p or 720p, This window or the whole screen, steady 60 fps or only real frames, GPU priority. Changes apply to the next recording and are saved at once; the header shows what is active.
+- Appearance in Settings, as in the other Bifrost apps: five themes (Console, Midnight, OD green, Paper, High contrast) and an accent (the theme's own, a swatch or a hue slider), applied live. The app icon keeps its own colours.
+- Your choices are kept in their own file (Recorder.prefs.json beside the Recorder's data) that Bifrost Suite never rewrites. A damaged file says so and the defaults are used.
+- Easier on the GPU by default: the light encoder, normal GPU priority, and the encoder is chosen from the graphics card's maker without a test encode (another encoder is tried, and the status line says so, only if the first one doesn't start).
+- Upload to Armory after a recording (with a key from Bifrost Suite, else the website's page opens), a start/stop key (Ctrl+Alt+R, or Ctrl+Alt+Shift+R if that is taken) and a short beep on start and stop, and the Recorder's own icon.
+
 ## 0.1.2
 - Screen capture switch (`"CaptureMethod": "screen"` in BifrostRecorder.settings.json): records the whole monitor the chosen window is on.
 - Variable frame rate switch (`"FrameRateMode": "vfr"`): only real frames, with their real times, no repeated frames.

@@ -20,7 +20,6 @@ using System.Threading;
 static class Diag {
   static string build, work;
   static readonly List<string> table = new List<string>();
-  static DateTime startedUtc;
 
   static string F(double v, string f) { return v.ToString(f, CultureInfo.InvariantCulture); }
 
@@ -108,30 +107,7 @@ static class Diag {
     }
   }
 
-  // ---- the System log: any NVIDIA display driver event since the run began stops everything
-  static List<string> DriverEvents(DateTime sinceUtc) {
-    var found = new List<string>();
-    try {
-      string ts = sinceUtc.ToString("yyyy-MM-ddTHH:mm:ss.000Z", CultureInfo.InvariantCulture);
-      var q = new EventLogQuery("System", PathType.LogName, "*[System[Provider[@Name='nvlddmkm'] and TimeCreated[@SystemTime>='" + ts + "']]]");
-      using (var r = new EventLogReader(q)) {
-        EventRecord e;
-        while ((e = r.ReadEvent()) != null) { found.Add("id " + e.Id + " at " + e.TimeCreated); e.Dispose(); }
-      }
-    } catch (Exception ex) { found.Add("(couldn't read the System log: " + ex.Message + ")"); if (!ex.Message.Contains("log")) { } }
-    return found;
-  }
-
-  static void SafetyCheck(string where) {
-    var ev = DriverEvents(startedUtc.AddSeconds(-2));
-    ev.RemoveAll(delegate(string s) { return s.StartsWith("(couldn't"); });
-    if (ev.Count > 0) {
-      Console.WriteLine("SAFETY STOP after " + where + ": NVIDIA driver events in the System log since this run began: " + string.Join("; ", ev.ToArray()));
-      Console.WriteLine("NVLDDMKM EVENT: stopping all GPU runs.");
-      Console.Out.Flush();
-      Environment.Exit(9);   // the job object ends anything still running
-    }
-  }
+  static void SafetyCheck(string where) { GpuSafety.Check(where); }
 
   // ---- one measured stretch: what the game does, what the GPU does, and how far a capture/encode (ffmpeg or the Recorder) gets
   class Result { public double RealFps = double.NaN, Speed = double.NaN, GameBase = double.NaN, GameDuring = double.NaN, Gpu, Enc, CpuPct, Dup; public string Note = ""; }
@@ -187,7 +163,7 @@ static class Diag {
   public static int Run(string[] args, string buildDir) {
     build = buildDir;
     work = Path.Combine(build, "diag"); if (Directory.Exists(work)) Directory.Delete(work, true); Directory.CreateDirectory(work);
-    startedUtc = DateTime.UtcNow;
+    GpuSafety.Begin();
     string which = args.Length > 1 && (args[1] == "fullscreen" || args[1] == "windowed" || args[1] == "both") ? args[1] : "both";
     int seconds = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 20;
     string only = null; for (int i = 1; i < args.Length - 1; i++) if (args[i] == "--only") only = "," + args[i + 1] + ",";
@@ -259,8 +235,7 @@ static class Diag {
     foreach (string row in table) Console.WriteLine(row);
     Console.WriteLine();
     Console.WriteLine("Counts after:  ffmpeg=" + Process.GetProcessesByName("ffmpeg").Length + " ffprobe=" + Process.GetProcessesByName("ffprobe").Length + " cmd=" + Process.GetProcessesByName("cmd").Length + " conhost=" + Process.GetProcessesByName("conhost").Length);
-    int alive = 0;
-    lock (Proc.Started) foreach (int pid in Proc.Started) { try { var q = Process.GetProcessById(pid); if (!q.HasExited) alive++; } catch (Exception) { } }
+    int alive = Proc.StillRunning();
     Console.WriteLine("processes this run started that are still running: " + alive);
     try { Directory.Delete(work, true); } catch (Exception) { }
     return 0;

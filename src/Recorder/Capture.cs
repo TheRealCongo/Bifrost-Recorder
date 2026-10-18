@@ -25,6 +25,28 @@ static class EncoderChoice {
 
   public static EncoderProfile Picked { get { lock (gate) return picked; } }
 
+  // No test encode: the encoder of the first GPU maker DXGI lists (NVIDIA NVENC, AMD AMF, Intel QSV), else the software one. Used when a test encode
+  // itself is a risk (a session started next to a running game has reset this PC's GPU driver). The real start then falls back with Next() if the pick fails.
+  public static EncoderProfile ByVendor() {
+    EncoderProfile pick = EncoderProfile.Software;
+    foreach (var o in Dxgi.Outputs()) {
+      if (o.VendorId == 0x10DE) pick = EncoderProfile.Nvenc; else if (o.VendorId == 0x1002) pick = EncoderProfile.Amf; else if (o.VendorId == 0x8086) pick = EncoderProfile.Qsv; else continue;
+      break;
+    }
+    lock (gate) { picked = pick; Log = "encoder chosen by the GPU maker (no test encode): " + pick.Name + Environment.NewLine; }
+    return pick;
+  }
+
+  // The encoder to try after one that failed to start: the ones after it in the order, then the software one; null after the software one.
+  public static EncoderProfile Next(EncoderProfile failed) {
+    if (failed == EncoderProfile.Software) return null;
+    int i = Array.IndexOf(EncoderProfile.Preference, failed);
+    return i >= 0 && i + 1 < EncoderProfile.Preference.Length ? EncoderProfile.Preference[i + 1] : EncoderProfile.Software;
+  }
+
+  public static void Set(EncoderProfile e) { lock (gate) picked = e; }
+  public static void Reset() { lock (gate) { picked = null; Log = ""; } }   // for the tests
+
   public static bool Works(string ffmpegExe, EncoderProfile e, out string why) {
     string so, se;
     int code = Proc.Run(ffmpegExe, FfmpegArgs.TestEncode(e), 20000, out so, out se);

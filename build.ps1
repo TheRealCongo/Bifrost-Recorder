@@ -4,7 +4,7 @@
 #   build\RecorderTests.exe     the automated tests (test only)
 # -Test runs build\RecorderTests.exe after building and fails if any test does. -Version sets the program's version.
 # Works in Windows PowerShell 5.1 and PowerShell 7.
-param([string]$Version = "0.1.2", [switch]$Test, [switch]$SkipFfmpeg)
+param([string]$Version = "0.1.3", [switch]$Test, [switch]$SkipFfmpeg)
 $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
@@ -62,7 +62,7 @@ if (-not $SkipFfmpeg) {
 }
 
 # Test only: the same program code (without its Main) plus the tests and their animated window.
-$testSources = ($app | Where-Object { (Split-Path $_ -Leaf) -ne "Program.cs" }) + (Join-Path $root "tests\RecorderTests.cs") + (Join-Path $root "tests\TestWindow.cs") + (Join-Path $root "tests\Diag.cs") + (Join-Path $root "tests\ArmoryStandIn.cs")
+$testSources = ($app | Where-Object { (Split-Path $_ -Leaf) -ne "Program.cs" }) + (Join-Path $root "tests\RecorderTests.cs") + (Join-Path $root "tests\TestWindow.cs") + (Join-Path $root "tests\Diag.cs") + (Join-Path $root "tests\ArmoryStandIn.cs") + (Join-Path $root "tests\GpuSafety.cs")
 Compile "exe" (Join-Path $build "RecorderTests.exe") $testSources
 
 # FakeGame: a borderless fullscreen Direct3D 11 flip-model window that stands in for a game in the tests (test only).
