@@ -1,0 +1,151 @@
+name: Release
+
+# Bifrost Recorder: a v* tag (e.g. v0.2.0) builds it with Windows' own C# compiler and OBS Studio's official runtime (pinned
+# by version and SHA-256 in build.ps1), runs the unit tests, makes a GitHub release with the changelog, the program and OBS
+# Studio's matching source (GPL), and publishes BifrostRecorder.zip (one "BifrostRecorder" folder holding
+# BifrostRecorder.exe) to the TFH Armory as ?app=recorder, where Bifrost Suite installs and updates it.
+# Only the unit tests run here: the capture, encoder and window tests need a real GPU and desktop, so the full suite
+# (build\RecorderTests.exe) runs on a PC before tagging, never next to a running game.
+# Needs the ARMORY_RECORDER_PUBLISH_TOKEN secret (Bifrost Recorder's publish token on the website); without it the build
+# and the GitHub release still happen and the Armory publish is skipped with a warning. Optional variable ARMORY_SERVER
+# overrides https://taskforcehalberd.org; with the ARMORY_ORIGIN_IP secret the runner publishes straight to the origin
+# server on port 9443, past Cloudflare's bot challenge, as the other Bifrost apps' workflows do.
+# The tag is the version (v1.2.3 = 1.2.3), and CHANGELOG.md must have a "## <version>" section in plain words.
+# Release order: the website's Armory entry first, then Bifrost Suite, then this.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish again, e.g. v0.2.0'
+        required: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = $env:TAG
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "Tag $tag isn't a version like v0.2.0." }
+          $version = $Matches[1]
+          $text = Get-Content CHANGELOG.md -Raw
+          $m = [regex]::Match($text, "(?ms)^## $([regex]::Escape($version))\b[^\n]*\n(.*?)(?=^## |\z)")
+          if (-not $m.Success -or -not $m.Groups[1].Value.Trim()) { throw "CHANGELOG.md has no '## $version' section." }
+          New-Item -ItemType Directory -Force out | Out-Null
+          $notes = $m.Groups[1].Value.Trim() + "`n`nBifrost Recorder is free software under the GPL (see LICENSE and THIRD-PARTY-NOTICES.md). It runs OBS Studio's official, unmodified runtime; OBS Studio's matching source is attached to this release."
+          $notes | Set-Content -Encoding utf8 out/release-notes.md
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Bifrost Recorder $version"
+
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1 -Version $env:VERSION
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          ./build/RecorderTests.exe --unit
+          if ($LASTEXITCODE) { throw "The unit tests failed" }
+
+      - name: Package
+        shell: pwsh
+        # One "BifrostRecorder" folder: the program, OBS's runtime beside it and the licences; never the test programs or
+        # their output.
+        run: |
+          $dir = "out/BifrostRecorder"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item build/BifrostRecorder.exe, build/LICENSE, build/THIRD-PARTY-NOTICES.md, build/*.dll, build/obs-*-test.exe $dir
+          Copy-Item build/licenses, build/obs $dir -Recurse
+          if ((Get-Item "$dir/BifrostRecorder.exe").VersionInfo.ProductVersion -ne $env:VERSION) { throw "BifrostRecorder.exe isn't version $env:VERSION" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $dir), "$PWD/out/BifrostRecorder.zip", [System.IO.Compression.CompressionLevel]::Optimal, $true)
+          Copy-Item "deps/obs-32.2.2/OBS-Studio-32.2.2-Sources.tar.gz" out/
+          Get-Item out/BifrostRecorder.zip, out/OBS-Studio-32.2.2-Sources.tar.gz | Select-Object Name, Length
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bifrost-Recorder-${{ steps.ver.outputs.version }}
+          path: out/BifrostRecorder.zip
+          retention-days: 14
+
+      - name: GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $files = @("out/BifrostRecorder.zip", "out/OBS-Studio-32.2.2-Sources.tar.gz")
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @files --clobber
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            "Replaced the files on the existing $env:TAG release."
+          } else {
+            gh release create $env:TAG @files --title "Bifrost Recorder $env:VERSION" --notes-file out/release-notes.md --verify-tag
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      - name: Publish to the TFH Armory
+        shell: pwsh
+        env:
+          TOKEN: ${{ secrets.ARMORY_RECORDER_PUBLISH_TOKEN }}
+          ORIGIN_IP: ${{ secrets.ARMORY_ORIGIN_IP }}
+          SERVER: ${{ vars.ARMORY_SERVER || 'https://taskforcehalberd.org' }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        # The website takes at most 1 MB per request, so the zip goes up in chunks (POST start, PUT chunks, POST finish).
+        run: |
+          if (-not $env:TOKEN) { "::warning::ARMORY_RECORDER_PUBLISH_TOKEN is not set: built $env:VERSION but did not publish it."; exit 0 }
+          $base = $env:SERVER.TrimEnd('/')
+          if ($env:ORIGIN_IP) {
+            $hostName = ([uri]$env:SERVER).Host
+            Add-Content "$env:SystemRoot\System32\drivers\etc\hosts" "`n$env:ORIGIN_IP $hostName"
+            $base = "https://${hostName}:9443"
+            "Publishing straight to the origin server."
+          }
+          $zip = (Resolve-Path out/BifrostRecorder.zip).Path
+          $size = (Get-Item $zip).Length
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $h = @{ Authorization = "Bearer $env:TOKEN" }
+          $api = "$base/api/armory/app/publish"
+          $start = Invoke-RestMethod -Method Post -Uri "${api}?app=recorder" -Headers $h -ContentType 'application/json' -Body (@{ size = $size; version = $env:VERSION } | ConvertTo-Json)
+          $id = $start.upload_id
+          $chunk = [int]$start.chunk_max
+          $fs = [System.IO.File]::OpenRead($zip)
+          try {
+            $buf = New-Object byte[] $chunk
+            $off = 0
+            while (($n = $fs.Read($buf, 0, $chunk)) -gt 0) {
+              $body = New-Object byte[] $n
+              [Array]::Copy($buf, $body, $n)
+              for ($try = 1; ; $try++) {
+                try { Invoke-RestMethod -Method Put -Uri "$api/${id}?app=recorder&offset=$off" -Headers $h -ContentType 'application/octet-stream' -Body $body | Out-Null; break }
+                catch { if ($try -ge 4) { throw }; Start-Sleep -Seconds (2 * $try) }
+              }
+              $off += $n
+            }
+          } finally { $fs.Dispose() }
+          $done = Invoke-RestMethod -Method Post -Uri "$api/$id/finish?app=recorder" -Headers $h -ContentType 'application/json' -Body (@{ version = $env:VERSION; sha256 = $sha } | ConvertTo-Json)
+          "Published Bifrost Recorder $($done.version): $($done.size) bytes, sha256 $($done.sha256)"

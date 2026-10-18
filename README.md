@@ -10,6 +10,10 @@ A small Windows recorder for games and programs: open it, pick the game or progr
   SHA-256) and copies the parts the Recorder uses, unmodified, next to `BifrostRecorder.exe`.
 - `build.ps1 -Test` builds and runs the tests (`build\RecorderTests.exe`). The tests refuse to run while a game is open.
 - Windows 10 or 11, 64-bit, with the Microsoft Visual C++ Redistributable (x64), which most games install.
+- Releases: a `v*` tag (e.g. `v0.2.0`) runs `.github/workflows/release.yml`. It builds, runs the unit tests, makes a GitHub
+  release with the program and OBS Studio's matching source, and publishes `BifrostRecorder.zip` to the TFH Armory, where
+  Bifrost Suite installs it (secret `ARMORY_RECORDER_PUBLISH_TOKEN`). Run the full `build.ps1 -Test` on a PC with a GPU
+  first: the workflow can't run the capture tests.
 
 Bifrost Recorder is a separate program from OBS Studio. It is not made, endorsed or supported by the OBS Project.
 `THIRD-PARTY-NOTICES.md` lists every OBS file and library it ships, their licences and where their source is.
