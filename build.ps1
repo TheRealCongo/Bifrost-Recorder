@@ -4,7 +4,7 @@
 #   build\RecorderTests.exe     the automated tests (test only)
 # -Test runs build\RecorderTests.exe after building and fails if any test does. -Version sets the program's version.
 # Works in Windows PowerShell 5.1 and PowerShell 7.
-param([string]$Version = "0.1.1", [switch]$Test, [switch]$SkipFfmpeg)
+param([string]$Version = "0.1.2", [switch]$Test, [switch]$SkipFfmpeg)
 $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
