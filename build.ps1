@@ -62,8 +62,11 @@ if (-not $SkipFfmpeg) {
 }
 
 # Test only: the same program code (without its Main) plus the tests and their animated window.
-$testSources = ($app | Where-Object { (Split-Path $_ -Leaf) -ne "Program.cs" }) + (Join-Path $root "tests\RecorderTests.cs") + (Join-Path $root "tests\TestWindow.cs")
+$testSources = ($app | Where-Object { (Split-Path $_ -Leaf) -ne "Program.cs" }) + (Join-Path $root "tests\RecorderTests.cs") + (Join-Path $root "tests\TestWindow.cs") + (Join-Path $root "tests\Diag.cs")
 Compile "exe" (Join-Path $build "RecorderTests.exe") $testSources
+
+# FakeGame: a borderless fullscreen Direct3D 11 flip-model window that stands in for a game in the tests (test only).
+Compile "winexe" (Join-Path $build "FakeGame.exe") @((Join-Path $root "tests\FakeGame.cs"))
 
 if ($Test) {
   & (Join-Path $build "RecorderTests.exe")

@@ -48,6 +48,7 @@ static class RecorderTests {
     if (args.Length > 0 && args[0] == "--unit") return UnitOnly();   // no GPU, no windows: safe while a game runs
     if (!Guard()) return 2;
     if (args.Length > 0 && args[0] == "--bench") return Bench(args);
+    if (args.Length > 0 && args[0] == "--diag") return Diag.Run(args, build);
     if (args.Length > 0 && args[0] == "--hold") return Hold(args);
 
     if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
@@ -79,7 +80,7 @@ static class RecorderTests {
   // ------------------------------------------------------------------------------------------------ the guard
   // Everything here uses the GPU (window capture and NVENC), so none of it runs next to a game, and two runs never overlap.
   // Process names that start with one of these count as a game.
-  static readonly string[] GamePrefixes = { "ArmaReforger", "arma3", "DayZ" };   // ArmaReforgerSteam, ...SteamDiag, ...WorkbenchSteamDiag
+  static readonly string[] GamePrefixes = { "ArmaReforger", "arma3", "DayZ", "Medal" };   // Medal: its encoder and game hook spoil the measurements   // ArmaReforgerSteam, ...SteamDiag, ...WorkbenchSteamDiag
   static Mutex runLock;   // held for the whole run
 
   static string RunningGame() {
