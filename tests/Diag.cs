@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// RecorderTests.exe --diag [windowed|fullscreen] [seconds]: does game capture keep up where window capture starved? FakeGame.exe (a Direct3D 11
+// RecorderTests.exe --diag [windowed|fullscreen] [seconds]: does game capture keep up where window capture starved? FakeGame.exe (a silent Direct3D 11
 // flip-model window whose load is tuned until it is GPU-bound at 60 fps, like a heavy game) is recorded by the Recorder for `seconds` each way:
 //   game    game capture (OBS's hook inside FakeGame)
 //   window  window capture (Windows Graphics Capture, what 0.1.x used)
