@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The animated window the tests record: the only thing they ever capture. It sits off every monitor, never takes the focus,
-// and redraws at 60 fps from its own thread (GDI into the window, the way a plain game window shows frames).
+// The animated window the tests record: the only thing they ever capture. It sits off every monitor, never takes the focus, has no taskbar button
+// (DeleteTab), and redraws at 60 fps from its own thread (GDI into the window, the way a plain game window shows frames).
 //   Simple  a moving bar, a frame counter and a strip of reference colours (for the colour check)
 //   Hard    a detailed foliage-like texture panning at changing speeds under 120 moving shapes: the stand-in for Arma
 //   Noise   a full frame of new random pixels every frame: the worst case any encoder can be given
@@ -22,6 +22,18 @@ class TestWindow : Form {
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint ms);
   [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint ms);
+
+  // The taskbar's own list of windows: DeleteTab takes this window's button away without changing the window (it stays an ordinary,
+  // visible top-level window, which window capture and the Recorder's program list need). Same approach as FakeGame.
+  [ComImport, Guid("56FDF342-FD6D-11d0-958A-006097C9A090"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface ITaskbarList {
+    [PreserveSig] int HrInit();
+    [PreserveSig] int AddTab(IntPtr h);
+    [PreserveSig] int DeleteTab(IntPtr h);
+    [PreserveSig] int ActivateTab(IntPtr h);
+    [PreserveSig] int SetActiveAlt(IntPtr h);
+  }
+  [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")] class TaskbarListCom { }
 
   // The reference colours along the bottom of the Simple scene, left to right, as drawn.
   public static readonly Color[] Swatches = {
@@ -55,6 +67,7 @@ class TestWindow : Form {
   public long RenderTicks, PresentTicks; // Stopwatch ticks spent making frames and putting them in the window
   public volatile int LastCounter;       // the counter drawn last
   public volatile bool Frozen;           // set: the loop stops redrawing (a game that has stopped producing frames)
+  volatile string taskbarNote = "taskbar button not yet removed";   // what removing the taskbar button came to, for the placed log
 
   TestWindow(Scene scene, int w, int h, bool border, string title) {
     this.scene = scene; cw = w; ch = h;
@@ -93,7 +106,7 @@ class TestWindow : Form {
     Native.RECT r; Native.GetWindowRect(win.Handle, out r);
     string where = "off every monitor";
     foreach (var s in Screen.AllScreens) if (s.Bounds.Contains(new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top))) where = "inside " + s.DeviceName + (s.Primary ? " (primary)" : " (secondary)");
-    lock (Placed) Placed.Add(title + ": " + r.Left + "," + r.Top + " " + (r.Right - r.Left) + "x" + (r.Bottom - r.Top) + " " + where);
+    lock (Placed) Placed.Add(title + ": " + r.Left + "," + r.Top + " " + (r.Right - r.Left) + "x" + (r.Bottom - r.Top) + " " + where + "; " + win.taskbarNote);
     return win;
   }
 
@@ -117,8 +130,19 @@ class TestWindow : Form {
     }
   }
 
+  // Runs on the window's own thread (the taskbar list is an apartment-threaded COM object), as soon as the window is showing.
+  void RemoveTaskbarButton() {
+    try {
+      var tb = (ITaskbarList)new TaskbarListCom();
+      int hr = tb.HrInit();
+      if (hr == 0) hr = tb.DeleteTab(Handle);
+      taskbarNote = hr == 0 ? "taskbar button removed" : "taskbar button NOT removed (0x" + ((uint)hr).ToString("X8") + ")";
+    } catch (Exception ex) { taskbarNote = "taskbar button NOT removed (" + ex.Message + ")"; }
+  }
+
   protected override void OnShown(EventArgs e) {
     base.OnShown(e);
+    RemoveTaskbarButton();
     if (scene == Scene.Static) { Render(0); Present(); }
     else { loop = new Thread(Loop) { IsBackground = true, Priority = ThreadPriority.AboveNormal, Name = "test window frames" }; loop.Start(); }
     if (LayerAlpha < 255) SetLayeredWindowAttributes(Handle, 0, (byte)LayerAlpha, 2);
