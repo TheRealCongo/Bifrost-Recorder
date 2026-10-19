@@ -28,6 +28,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   release:
@@ -84,12 +85,6 @@ jobs:
           Get-Item out/BifrostRecorder.zip, out/OBS-Studio-32.2.2-Sources.tar.gz | Select-Object Name, Length
         env:
           VERSION: ${{ steps.ver.outputs.version }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Bifrost-Recorder-${{ steps.ver.outputs.version }}
-          path: out/BifrostRecorder.zip
-          retention-days: 14
 
       - name: GitHub release
         shell: pwsh
@@ -149,3 +144,29 @@ jobs:
           } finally { $fs.Dispose() }
           $done = Invoke-RestMethod -Method Post -Uri "$api/$id/finish?app=recorder" -Headers $h -ContentType 'application/json' -Body (@{ version = $env:VERSION; sha256 = $sha } | ConvertTo-Json)
           "Published Bifrost Recorder $($done.version): $($done.size) bytes, sha256 $($done.sha256)"
+
+      - name: Clean up past releases
+        # Past releases lose their files; their notes and tags stay (to roll back, run this workflow on the old tag).
+        # This release's files, drafts, newer pre-releases and builds of work not released yet stay.
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_TAG: ${{ env.TAG }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          latest=$(gh api "repos/$repo/releases/latest" --jq '.tag_name + " " + .created_at') || exit 0
+          latest_tag=${latest% *}
+          latest_at=${latest#* }
+          echo "Keeping the files of $latest_tag and $THIS_TAG, drafts, newer pre-releases, and builds of work newer than $latest_tag."
+          gh api --paginate "repos/$repo/releases?per_page=100" --jq ".[] | select((.draft | not) and .created_at < \"$latest_at\" and .tag_name != \"$THIS_TAG\") | .tag_name as \$t | .assets[] | \"\(.id) \(\$t) \(.name)\"" |
+            while read -r id tag name; do
+              if gh api -X DELETE "repos/$repo/releases/assets/$id" > /dev/null; then echo "Removed $name from $tag"; else echo "::warning::Couldn't remove $name from $tag"; fi
+            done
+          gh api --paginate "repos/$repo/actions/artifacts?per_page=100" --jq '.artifacts[] | select(.expired | not) | "\(.id) \(.workflow_run.head_sha) \(.name)"' |
+            while read -r id sha name; do
+              # "ahead": the newest release contains this build's commit and has moved past it.
+              if [ "$(gh api "repos/$repo/compare/$sha...$latest_tag?per_page=1" --jq .status 2>/dev/null)" = ahead ]; then
+                if gh api -X DELETE "repos/$repo/actions/artifacts/$id" > /dev/null; then echo "Removed build $name ($sha)"; else echo "::warning::Couldn't remove build $name"; fi
+              fi
+            done
