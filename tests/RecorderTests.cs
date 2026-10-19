@@ -6,7 +6,7 @@
 //   --engine       only start libobs, list what it registered, and stop it
 //   --diag [windowed|fullscreen] [seconds]   game capture against window capture on FakeGame at a GPU-bound 60 fps (Diag.cs)
 // Only windows these tests create are ever recorded or pictured: their own test windows (nearly invisible, alpha 1/255, click-through)
-// and FakeGame.exe (a small Direct3D 11 window that game capture hooks, shown for a few seconds). The tests never record the screen, the
+// and FakeGame.exe (a small Direct3D 11 window that game capture hooks: layered at alpha 1/255, click-through, never focused, no taskbar button). The tests never record the screen, the
 // PC's sound or a microphone: the sound is the test process's own (silent), and the mic track is made from a device that doesn't exist.
 // Everything the tests make is in build\test-output\ (cleared at the start); the screenshots kept for the Dev timeline go to docs\screenshots\m2\.
 using System;
@@ -68,7 +68,7 @@ static class RecorderTests {
     Directory.CreateDirectory(shotsDir); Directory.CreateDirectory(throwDir);
     Console.WriteLine("Counts before: " + Counts());
     var watch = new Watcher(); watch.Start(); watcher = watch;
-    Diag.Game.Started = delegate(int pid) { watch.Allow(pid); };   // FakeGame's window is meant to show
+    Diag.Game.Started = delegate(int pid) { watch.Allow(pid); };   // FakeGame's window is a visible top-level window (alpha 1/255): the watcher checks it as a test window instead (Silent)
     try {
       Units(true);
       GpuSafety.Check("the unit tests");
@@ -88,7 +88,7 @@ static class RecorderTests {
     bool allPlaced = true;
     lock (TestWindow.Placed) foreach (var p in TestWindow.Placed) if (!p.Contains(wantScreen)) allPlaced = false;
     Check("every test window opened fully inside the " + (TestWindow.OnSecondary ? "secondary" : "primary") + " monitor, as asked", TestWindow.Placed.Count > 0 && allPlaced, TestWindow.Placed.Count + " windows");
-    Check("no window of a child process was ever visible (FakeGame's own excepted), and the Recorder's own window never touched a monitor", violations.Count == 0 && watch.Looks > 20,
+    Check("no window of a child process was ever visible (FakeGame's own is held to the test windows' rules: alpha 1/255, click-through, no-activate, never topmost or in front), and the Recorder's own window never touched a monitor", violations.Count == 0 && watch.Looks > 20,
       watch.Looks + " looks; " + string.Join("; ", violations.ToArray()));
     int alive = Proc.StillRunning();
     Check("no process the tests started is still running", alive == 0, alive + " alive of " + Proc.Started.Count);
@@ -1198,16 +1198,17 @@ static class RecorderTests {
     OtherRecordings();
   }
 
-  // Game capture of FakeGame: a Direct3D 11 window with a flip-model swap chain, like a game, hooked by OBS's own signed hook. FakeGame shows
-  // on the primary monitor for a few seconds (a small window, a light load, vsync on).
+  // Game capture of FakeGame: a Direct3D 11 window with a flip-model swap chain, like a game, hooked by OBS's own signed hook. FakeGame sits on
+  // the primary monitor at the bottom of the window order, invisible (alpha 1/255) and click-through (a small window, a light load, vsync on).
   static void GameCapture(MainForm form, Watcher watch, Func<WindowInfo, bool> mine) {
-    Console.WriteLine("-- game capture of FakeGame (shown for a few seconds)");
+    Console.WriteLine("-- game capture of FakeGame (silent: alpha 1/255, click-through, never focused, no taskbar button)");
     Diag.Game g = null;
     try {
       try { g = Diag.Game.Start(build, "windowed", "1280x720", "20", 1, Path.Combine(outDir, "fakegame.log")); }
       catch (Exception ex) { Check("FakeGame started", false, ex.Message); return; }
-      watch.Allow(g.Pid);
+      watch.Allow(g.Pid); watch.Silent(g.Hwnd);
       Note("FakeGame: " + g.Ready);
+      Check("FakeGame is silent: it was never given the foreground and sits at alpha 1/255", g.Ready.Contains("foreground=False") && g.Ready.Contains("alpha=1 "), g.Ready);
       var gamePid = (uint)g.Pid;
       Invoke(form, delegate { form.WindowFilter = delegate(WindowInfo w) { return mine(w) || w.ProcessId == gamePid; }; form.Config = new AppSettings(); form.ReloadWindows(); });
       Check("FakeGame's window is in the list and selectable", Invoke(form, delegate { return form.SelectHwnd(g.Hwnd); }));
@@ -1455,12 +1456,14 @@ static class RecorderTests {
 
     readonly List<string> violations = new List<string>();
     readonly List<IntPtr> quiet = new List<IntPtr>();
-    readonly HashSet<uint> allowed = new HashSet<uint>();   // children whose window is meant to show (FakeGame)
+    readonly HashSet<uint> allowed = new HashSet<uint>();   // children whose window is an ordinary visible one at alpha 1/255 (FakeGame): not flagged as a child's window
+    readonly List<IntPtr> silent = new List<IntPtr>();       // FakeGame's window: held to the same rules as the test windows
     Thread t; volatile bool stop;
     public int Looks;
 
     public void Quiet(IntPtr h) { lock (quiet) quiet.Add(h); }
     public void Allow(int pid) { lock (allowed) allowed.Add((uint)pid); }
+    public void Silent(IntPtr h) { lock (silent) silent.Add(h); }
     public void Start() { t = new Thread(Loop) { IsBackground = true, Name = "window watcher" }; t.Start(); }
     public List<string> Stop() { stop = true; t.Join(3000); lock (violations) return new List<string>(violations); }
 
@@ -1499,6 +1502,15 @@ static class RecorderTests {
           if ((ex & 0x8) != 0) Add("a recorded test window was topmost");
           if ((ex & 0x08000000) == 0) Add("a recorded test window could take the focus (no WS_EX_NOACTIVATE)");
           if (h == fg) Add("a recorded test window took the focus");
+        }
+        lock (silent) foreach (var h in silent) {
+          if (!Native.IsWindow(h)) continue;
+          int ex = GetWindowLong(h, -20);
+          if ((ex & 0x8) != 0) Add("FakeGame's window was topmost");
+          if ((ex & (0x80000 | 0x20 | 0x08000000)) != (0x80000 | 0x20 | 0x08000000)) Add("FakeGame's window wasn't layered, click-through and no-activate");
+          uint key, flags; byte alpha;
+          if (GetLayeredWindowAttributes(h, out key, out alpha, out flags) && (flags & 2) != 0 && alpha > 2) Add("FakeGame's window was visible (alpha " + alpha + ")");
+          if (h == fg) Add("FakeGame's window took the focus");
         }
         uint fpid; GetWindowThreadProcessId(GetForegroundWindow(), out fpid);
         if (fpid == (uint)Process.GetCurrentProcess().Id) Add("a window of the tests took the focus");

@@ -5,14 +5,19 @@
 // gets almost no frames from it, exactly as with a focused fullscreen game. "windowed" mode (not covering the monitor) is composed by
 // DWM, for comparison.
 //
+// Silent by design (the tests run while someone may be using the PC): the window is layered at alpha 1/255 and click-through, never
+// activated or given the focus (no key is sent to get it), at the bottom of the window order, never topmost, and its taskbar button is
+// removed with ITaskbarList.DeleteTab. The window is still an ordinary visible top-level window, so OBS's hook and the Recorder's list see it.
+// When Windows reports the window as occluded, Present returns at once; with vsync on the loop then paces itself to the target rate.
+//
 // Raw COM interop, no NuGet, C# 5. Content: a moving gradient and bar, a big frame counter (7 segments, drawn by the shader), eight
 // colour swatches along the bottom, and an optional full-white flash on a schedule. The pixel shader's loop count is the GPU-load
 // knob; --load auto adjusts it each second until the unlocked frame rate is the target (a GPU-bound 60 fps, like a heavy game).
 //
 //   FakeGame.exe [--mode fullscreen|windowed] [--monitor primary|secondary|\\.\DISPLAYn] [--size WxH]   (size: windowed mode only)
 //                [--vsync 1|0] [--buffers 2|3] [--load N|auto] [--target-fps 60] [--seconds S] [--quit-event NAME]
-//                [--flash-every S] [--flash-ms 120] [--log FILE] [--topmost]
-// Stdout (and --log): READY hwnd=.. mode=.. size=.. foreground=.., then one line a second: FPS <presented> LOAD <loops> FG <0|1>, and
+//                [--flash-every S] [--flash-ms 120] [--log FILE]
+// Stdout (and --log): READY hwnd=.. mode=.. size=.. foreground=.. exstyle=0x.. alpha=.., then one line a second: FPS <presented> LOAD <loops> FG <0|1> OCC <n>, and
 // FLASH <seconds> qpc=<ticks> at each flash (the hook for the audio builder: static FakeGame.FlashHook is called at the same moment).
 using System;
 using System.Collections.Generic;
@@ -32,14 +37,24 @@ static class FakeGame {
   // ---------------------------------------------------------------------------------------------- Win32
   [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
-  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
-  [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
-  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+  [DllImport("user32.dll", EntryPoint = "GetLayeredWindowAttributes")] static extern bool GetLayeredWindowAttributesNative(IntPtr h, out uint key, out byte alpha, out uint flags);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] static extern int GetWindowLong(IntPtr h, int index);
   [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
   [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint ms);
+
+  // The taskbar's own list of windows: DeleteTab takes this window's button away without changing the window (it stays an ordinary,
+  // visible top-level window, which game capture and the Recorder's list need).
+  [ComImport, Guid("56FDF342-FD6D-11d0-958A-006097C9A090"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface ITaskbarList {
+    [PreserveSig] int HrInit();
+    [PreserveSig] int AddTab(IntPtr h);
+    [PreserveSig] int DeleteTab(IntPtr h);
+    [PreserveSig] int ActivateTab(IntPtr h);
+    [PreserveSig] int SetActiveAlt(IntPtr h);
+  }
+  [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")] class TaskbarListCom { }
 
   // ---------------------------------------------------------------------------------------------- D3D11 / DXGI (raw COM)
   [DllImport("d3d11.dll")]
@@ -168,6 +183,14 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
 
   class GameForm : Form {
     public GameForm() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque, true); }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+      get {
+        var cp = base.CreateParams;
+        cp.ExStyle |= 0x08000000 | 0x80000 | 0x20;   // WS_EX_NOACTIVATE (never takes the focus), WS_EX_LAYERED, WS_EX_TRANSPARENT (clicks go through)
+        return cp;
+      }
+    }
     protected override void OnPaintBackground(PaintEventArgs e) { }
     protected override void OnPaint(PaintEventArgs e) { }
     public volatile bool Quit;
@@ -210,10 +233,14 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
     form.FormBorderStyle = FormBorderStyle.None;
     form.StartPosition = FormStartPosition.Manual;
     form.BackColor = Color.Black;
-    form.ShowInTaskbar = true;
-    form.TopMost = Has(args, "--topmost");
+    form.TopMost = false;
     form.Bounds = fullscreen ? screen.Bounds : new Rectangle(screen.Bounds.X + 100, screen.Bounds.Y + 100, size.Width, size.Height);
+    IntPtr hwnd = form.Handle;
+    SetLayeredWindowAttributes(hwnd, 0, 1, 2);                                   // LWA_ALPHA at 1/255 before the window is first shown: invisible
+    SetWindowPos(hwnd, (IntPtr)1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);        // HWND_BOTTOM, no move, no size, no activate
     form.Show();
+    SetWindowPos(hwnd, (IntPtr)1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
+    try { var tb = (ITaskbarList)new TaskbarListCom(); tb.HrInit(); tb.DeleteTab(hwnd); } catch (Exception ex) { Log("taskbar button not removed: " + ex.Message); }
     Application.DoEvents();
     SetThreadExecutionState(0x80000000 | 0x00000002 | 0x00000001);   // ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
     timeBeginPeriod(1);
@@ -249,15 +276,16 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
       var topo = Slot<TopologyFn>(ctx, 24); var omRt = Slot<OmSetRtFn>(ctx, 33); var rsVp = Slot<RsViewportsFn>(ctx, 44); var upd = Slot<UpdateSubFn>(ctx, 48);
       var present = Slot<PresentFn>(sc, 8);
 
-      // the foreground, the way a game gets it
-      bool fg = TakeForeground(form.Handle);
+      // the window is never given the foreground; the line says what it has (the tests check it stays that way)
+      bool fg = GetForegroundWindow() == form.Handle;
+      byte alpha = 255; uint ck, lf; GetLayeredWindowAttributesNative(hwnd, out ck, out alpha, out lf);
       Log("READY hwnd=" + form.Handle.ToInt64() + " mode=" + (fullscreen ? "fullscreen" : "windowed") + " monitor=" + screen.DeviceName + " size=" + size.Width + "x" + size.Height +
-          " vsync=" + vsync + " buffers=" + buffers + " tearing=" + tearing + " foreground=" + fg + " pid=" + Process.GetCurrentProcess().Id);
+          " vsync=" + vsync + " buffers=" + buffers + " tearing=" + tearing + " foreground=" + fg + " exstyle=0x" + GetWindowLong(hwnd, -20).ToString("X") + " alpha=" + alpha + " pid=" + Process.GetCurrentProcess().Id);
 
       double loops = loadArg == "auto" ? 200 : double.Parse(loadArg, CultureInfo.InvariantCulture);
       bool auto = loadArg == "auto";
       var clock = Stopwatch.StartNew();
-      long frame = 0, lastCount = 0; double lastSec = 0;
+      long frame = 0, lastCount = 0, occluded = 0; double lastSec = 0, nextFrameAt = 0;
       bool flashing = false; double lastFlashStart = -1;
       while (!form.Quit) {
         Application.DoEvents();
@@ -286,12 +314,20 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
         draw(ctx, 3, 0);
         int phr = present(sc, vsync == 0 ? 0u : 1u, vsync == 0 && tearing ? 0x200u : 0u);   // ALLOW_TEARING
         if (phr < 0 && (uint)phr != 0x087A0001) { Log("Present failed 0x" + ((uint)phr).ToString("X8")); break; }   // DXGI_STATUS_OCCLUDED is fine
+        if ((uint)phr == 0x087A0001) {   // occluded: Present came back at once. With vsync on there is nothing to wait for, so keep the target rate
+          occluded++;
+          if (vsync != 0) {
+            double period = 1.0 / targetFps; nextFrameAt = Math.Max(nextFrameAt + period, clock.Elapsed.TotalSeconds - period);
+            double wait = nextFrameAt - clock.Elapsed.TotalSeconds;
+            if (wait > 0.0015) Thread.Sleep((int)(wait * 1000 - 1));
+          }
+        } else nextFrameAt = clock.Elapsed.TotalSeconds;
         frame++;
 
         if (now - lastSec >= 1.0) {
           double fps = (frame - lastCount) / (now - lastSec);
           bool inFg = GetForegroundWindow() == form.Handle;
-          Log("FPS " + fps.ToString("0.0", CultureInfo.InvariantCulture) + " LOAD " + ((int)loops).ToString(CultureInfo.InvariantCulture) + " FG " + (inFg ? 1 : 0));
+          Log("FPS " + fps.ToString("0.0", CultureInfo.InvariantCulture) + " LOAD " + ((int)loops).ToString(CultureInfo.InvariantCulture) + " FG " + (inFg ? 1 : 0) + " OCC " + occluded);
           if (auto) {   // a GPU-bound frame rate at the target: more work when faster, less when slower
             if (fps > targetFps * 1.03) loops = Math.Min(400000, loops * (fps > targetFps * 1.5 ? 1.5 : 1.12));
             else if (fps < targetFps * 0.97) loops = Math.Max(0, loops / (fps < targetFps * 0.6 ? 1.5 : 1.12));
@@ -322,19 +358,5 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
     }
     if (errors != IntPtr.Zero) Release(errors);
     return code;
-  }
-
-  // Alt-key trick + AttachThreadInput + SetForegroundWindow, a few tries; true when GetForegroundWindow is this window.
-  static bool TakeForeground(IntPtr h) {
-    for (int i = 0; i < 8; i++) {
-      keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);   // VK_MENU down and up: lets SetForegroundWindow through
-      uint pid; uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), out pid), me = GetCurrentThreadId();
-      if (fgThread != me) AttachThreadInput(me, fgThread, true);
-      BringWindowToTop(h); SetForegroundWindow(h);
-      if (fgThread != me) AttachThreadInput(me, fgThread, false);
-      Application.DoEvents(); Thread.Sleep(150);
-      if (GetForegroundWindow() == h) return true;
-    }
-    return false;
   }
 }
