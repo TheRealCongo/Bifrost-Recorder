@@ -291,6 +291,13 @@ class Recording {
     if (!Obs.Started) { error = "The recording engine isn't running."; return false; }
     try { Directory.CreateDirectory(Path.GetDirectoryName(Mp4Path)); }
     catch (Exception ex) { error = "Can't make the recordings folder: " + ex.Message; return false; }
+    // Before any capture or encoder: can the file be made at all? libobs only says "Unable to open file" and then every encoder looks as if it
+    // refused to start (a GPU encoder session is opened for each), so a folder that can't be written to would read as an encoder fault.
+    try {
+      bool existed = File.Exists(Mp4Path);
+      using (new FileStream(Mp4Path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite)) { }
+      if (!existed) File.Delete(Mp4Path);
+    } catch (Exception ex) { error = "Can't write to the recordings folder: " + ex.Message; log.Line(error); log.Close(); return false; }
     Obs.Sink = LogLine;   // libobs's own messages go to this recording's log
     log.Line("Bifrost Recorder " + Application.ProductVersion + " with libobs " + Obs.Version + " (OBS Studio's engine)");
     lock (Obs.StartupLog) {   // the first recording's log also gets the engine's start: the GPUs, the monitors, which encoders passed their tests

@@ -52,6 +52,7 @@ static class RecorderTests {
 
     if (args.Length > 0 && args[0] == "--job-child") return JobChild();   // started by a run that already passed the guard; CPU only
     if (args.Length > 0 && args[0] == "--window") return WindowChild(args);   // one test window for a run that already passed the guard; CPU only
+    if (args.Length > 0 && args[0] == "--crash-child") return CrashChild(args);   // started by a run that already passed the guard and holds the lock; records, then ends itself outright
     if (args.Length > 0 && args[0] == "--guard-check") { Console.WriteLine("game running: " + (RunningGame() ?? "none")); return 0; }   // reads the process list only; nothing else
     if (args.Length > 0 && args[0] == "--guard-test") { bool go = Guard(); Console.WriteLine("guard says: " + (go ? "go" : "refuse")); return go ? 0 : 2; }   // the guard and nothing after it
     if (args.Length > 0 && args[0] == "--unit") return UnitOnly();   // no GPU, no windows: safe while a game runs
@@ -63,7 +64,7 @@ static class RecorderTests {
     if (args.Length > 0 && args[0] == "--hold") return Hold(args);
     if (args.Length > 0 && args[0] == "--engine") { EngineTest(); Obs.Shutdown(); GpuSafety.Check("the engine start"); Console.WriteLine(passed + " passed, " + failed + " failed (engine only)"); return failed == 0 ? 0 : 1; }
 
-    if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+    ClearOutDir();
     Directory.CreateDirectory(outDir);
     Directory.CreateDirectory(shotsDir); Directory.CreateDirectory(throwDir);
     Console.WriteLine("Counts before: " + Counts());
@@ -141,9 +142,19 @@ static class RecorderTests {
   }
 
   // ------------------------------------------------------------------------------------------------ unit tests
+  // The test output folder emptied before a run. A file made by the last run may still be held open for a moment by something else on the PC
+  // (a virus scanner or the search indexer looking at a fresh .mp4), so deleting is tried again for up to 20 s before the run gives up.
+  static void ClearOutDir() {
+    for (int tries = 0; ; tries++) {
+      try { if (Directory.Exists(outDir)) Directory.Delete(outDir, true); return; }
+      catch (IOException) { if (tries >= 40) throw; Thread.Sleep(500); }
+      catch (UnauthorizedAccessException) { if (tries >= 40) throw; Thread.Sleep(500); }
+    }
+  }
+
   // --unit: only the checks that need neither the GPU nor a window (so they may run next to a game): no test encode, no capture.
   static int UnitOnly() {
-    if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+    ClearOutDir();
     Directory.CreateDirectory(outDir);
     Console.WriteLine("Counts before: " + Counts());
     try { Units(false); } catch (Exception ex) { Check("the run finished", false, ex.ToString()); }
@@ -563,7 +574,7 @@ static class RecorderTests {
   // ------------------------------------------------------------------------------------------------ the window's upload, hotkey and cue (no GPU)
   // --ui: only these (a Recorder window off every monitor and the upload window, against the stand-in server; no capture, no encode).
   static int UiOnly() {
-    if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+    ClearOutDir();
     Directory.CreateDirectory(outDir); Directory.CreateDirectory(shotsDir); Directory.CreateDirectory(throwDir);
     Console.WriteLine("Counts before: " + Counts());
     Native.ExcludePid = 0;
@@ -1008,6 +1019,18 @@ static class RecorderTests {
     public static bool Owns(WindowInfo w) { lock (Pids) return Pids.Contains((int)w.ProcessId) && w.Title.StartsWith(WindowPrefix); }
   }
 
+  // --crash-child <hwnd> <folder> <seconds>: records the given window (window capture), says RECORDING=<file>, and after <seconds> ends its own
+  // process outright, with no Stop: what a crash or End Task leaves behind. The parent checks the file still plays.
+  static int CrashChild(string[] a) {
+    string err; bool started;
+    var rec = Rec(new IntPtr(long.Parse(a[1], CultureInfo.InvariantCulture)), a[2], "crash", null, null, out started, out err);
+    if (!started) { Console.WriteLine("FAILED=" + err); Console.Out.Flush(); return 1; }
+    Console.WriteLine("RECORDING=" + rec.Mp4Path); Console.Out.Flush();
+    Thread.Sleep(int.Parse(a[3], CultureInfo.InvariantCulture) * 1000);
+    Process.GetCurrentProcess().Kill();
+    return 0;
+  }
+
   static int JobChild() {
     var p = Proc.Start(Ping, "-n 600 127.0.0.1", false);
     Console.WriteLine("PID=" + p.Id); Console.Out.Flush();
@@ -1395,6 +1418,60 @@ static class RecorderTests {
       }
     }
     w4.CloseWindow();
+
+    // the Recorder ended outright mid-recording (a crash, End Task): CHANGELOG 0.2.0 says the MP4 "still plays if the PC crashes"
+    var w5 = RemoteWindow.Open(Scene.Simple, 640, 360, true, WindowPrefix + ": recorder killed");
+    var crash = Proc.Start(Path.Combine(build, "RecorderTests.exe"), "--crash-child " + w5.Handle.ToInt64() + " " + Tools.Quote(folder) + " 6", false);
+    var firstLine = crash.StandardOutput.ReadLine() ?? "";
+    string crashFile = firstLine.StartsWith("RECORDING=") ? firstLine.Substring(10) : null;
+    Check("crash test: the child recorder started recording", crashFile != null, firstLine);
+    if (crashFile != null) {
+      bool died = crash.WaitForExit(30000);
+      Check("crash test: the recorder was ended outright, with no Stop", died && crash.ExitCode != 0, "exit " + (died ? crash.ExitCode.ToString() : "still running"));
+      Thread.Sleep(500);
+      var cp = File.Exists(crashFile) ? ProbeResult.Run(crashFile, true) : null;
+      Check("crash test: the unfinished .mp4 still plays: video and audio, about 6 s (at least 3 s)", cp != null && cp.Ok && cp.Audio.Count == 1 && cp.Duration > 3, cp == null ? "no file" : (cp.Ok ? cp.Frames + " frames " + cp.Duration.ToString("0.00") + " s " + cp.AudioSummary() : cp.Error));
+    }
+    w5.CloseWindow();
+
+    // a recordings folder that exists but can't be written to (denied by its permissions): the recording must not start, the message must
+    // point at the folder and not at the encoders, and nothing may be left behind
+    var w6 = RemoteWindow.Open(Scene.Simple, 640, 360, true, WindowPrefix + ": folder can't be written");
+    string denied = Path.Combine(outDir, "denied");
+    Directory.CreateDirectory(denied);
+    string sid = System.Security.Principal.WindowsIdentity.GetCurrent().User.Value, aso, ase;
+    string icacls = Path.Combine(Environment.SystemDirectory, "icacls.exe");
+    int denyCode = Proc.Run(icacls, Tools.Quote(denied) + " /deny *" + sid + ":(OI)(CI)(WD,AD)", 20000, out aso, out ase);
+    Check("unwritable folder: the folder was made unwritable for this test (icacls deny)", denyCode == 0, denyCode + " " + Tools.Last(aso + ase, 2));
+    var r6 = Rec(w6.Handle, denied, "denied", null, null, out started, out err);
+    Note("unwritable folder: Start said: " + err);
+    Check("unwritable folder: the recording does not start", !started, err);
+    Check("unwritable folder: the message names the folder, not the encoders", err != null && err.IndexOf("folder", StringComparison.OrdinalIgnoreCase) >= 0 && !err.StartsWith("No encoder"), err);
+    Proc.Run(icacls, Tools.Quote(denied) + " /remove:d *" + sid, 20000, out aso, out ase);
+    string deniedLog = r6.LogPath != null && File.Exists(r6.LogPath) ? File.ReadAllText(r6.LogPath) : "";
+    Check("unwritable folder: no encoder was tried (no GPU encoder session opened for a folder fault)", deniedLog.Length > 0 && !deniedLog.Contains("encoder obs_") && !deniedLog.Contains("encoder h265_"), Tools.Last(deniedLog, 2));
+    Check("unwritable folder: nothing was left in it", Directory.GetFileSystemEntries(denied).Length == 0, string.Join(",", Directory.GetFileSystemEntries(denied)));
+    w6.CloseWindow();
+
+    // the output stopping by itself (what a full disk or a failed encoder does): the Recorder is told, and Stop afterwards still ends cleanly
+    var w7 = RemoteWindow.Open(Scene.Simple, 640, 360, true, WindowPrefix + ": output stops by itself");
+    var r7 = Rec(w7.Handle, folder, "selfstop", null, null, out started, out err);
+    Check("self-stop: recording started", started, err);
+    if (started) {
+      string why = null;
+      r7.Ended += delegate(string s) { why = s; };
+      Thread.Sleep(2500);
+      var outField = typeof(Recording).GetField("output", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+      ObsApi.obs_output_force_stop((IntPtr)outField.GetValue(r7));   // libobs ends the output without Stop being asked
+      Check("self-stop: the Recorder is told the recording stopped by itself within 3 s", WaitFor(delegate { return why != null; }, 3000, "ended") && why.StartsWith("The recording stopped by itself"), why);
+      var res7 = r7.Stop();
+      Check("self-stop: Stop afterwards returns quickly, not by force, and keeps the file", !res7.Forced && res7.StopSeconds < 5 && res7.Bytes > 0, res7.Message + " forced=" + res7.Forced + " " + res7.StopSeconds.ToString("0.0") + "s " + res7.Bytes + " bytes");
+      if (res7.Bytes > 0) {
+        var p7 = ProbeResult.Run(r7.Mp4Path, false);
+        Check("self-stop: the kept file plays (video, 1 audio track, at least 1.5 s)", p7.Ok && p7.Audio.Count == 1 && p7.Duration > 1.5, p7.Ok ? p7.Duration.ToString("0.00") + " s " + p7.AudioSummary() : p7.Error);
+      }
+    }
+    w7.CloseWindow();
 
     // a window that doesn't exist: a clear failure, nothing left behind
     var gone = new Recording(null, new WindowInfo { Handle = new IntPtr(0x7FFFF), Title = "gone", ClassName = "", ExeName = "" }, 640, 360, folder, "gone", new AppSettings(), null);
