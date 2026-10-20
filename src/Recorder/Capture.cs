@@ -160,7 +160,19 @@ class Recording {
   readonly ObsApi.SignalCallback onStop;   // kept alive while libobs holds it
   static bool gpuRaised;                   // the Recorder's GPU class was raised by an earlier recording
   public static string MicDevice = "default";   // the tests name a device that doesn't exist, so the three tracks are made without opening anyone's mic
-  public event Action<string> Ended;       // the window closed, or the output stopped by itself; the reason. Raised once, from a worker thread.
+  // The window closed, or the output stopped by itself; the reason. Raised once, from a worker thread. Whoever subscribes after it has happened
+  // (the window subscribes a moment after Start returns) is told at once, from the subscribing thread.
+  public event Action<string> Ended {
+    add {
+      string already;
+      lock (endedGate) { endedHandler += value; already = endedReason; }
+      if (already != null) value(already);
+    }
+    remove { lock (endedGate) endedHandler -= value; }
+  }
+  readonly object endedGate = new object();
+  Action<string> endedHandler;
+  string endedReason;                      // set once Ended has been raised for a recording that was not being stopped by the Recorder
 
   // encoder null = the engine's pick (Obs.PickEncoder). logFolder null = no log. screen: the monitor the window is on, for screen capture.
   public Recording(EncoderProfile encoder, WindowInfo window, int clientWidth, int clientHeight, string folder, string baseName, AppSettings cfg = null, string logFolder = null, DxgiOutput screen = null) {
@@ -285,7 +297,15 @@ class Recording {
     return false;
   }
 
+  // Starts the recording. When it can't start, for whatever reason, the recording's log file is closed again.
   public bool Start(out string error, int firstPictureTimeoutMs) {
+    bool ok = false;
+    try { ok = StartCore(out error, firstPictureTimeoutMs); }
+    finally { if (!ok) log.Close(); }
+    return ok;
+  }
+
+  bool StartCore(out string error, int firstPictureTimeoutMs) {
     error = null;
     if (!Native.IsWindow(Window.Handle)) { error = "That window has gone."; return false; }
     if (!Obs.Started) { error = "The recording engine isn't running."; return false; }
@@ -367,8 +387,12 @@ class Recording {
   void Raise(string reason) {
     if (Interlocked.Exchange(ref endedRaised, 1) != 0) return;
     log.Line("ended: " + reason);
-    var h = Ended;
-    if (h != null && !stopping) h(reason);
+    Action<string> h;
+    lock (endedGate) {
+      if (stopping) return;
+      endedReason = reason; h = endedHandler;
+    }
+    if (h != null) h(reason);
   }
 
   // Everything this recording made in libobs, released; the engine itself keeps running for the next one. The log is closed unless keepLog.
