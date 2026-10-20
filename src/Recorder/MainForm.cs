@@ -45,6 +45,7 @@ class MainForm : Form {
   string recordingsFolder, logsFolder;
   AppSettings cfg = new AppSettings();
   bool closeWhenDone;
+  ManualResetEvent stopDone;                     // set when the stop under way has finished the file (a shutdown waits for it)
   bool encoderReady;
 
   // Tests: which windows may be listed (null = all), where recordings go, what "Open recordings folder" does.
@@ -237,12 +238,39 @@ class MainForm : Form {
 
   protected override void OnActivated(EventArgs e) { base.OnActivated(e); if (state == State.Idle && IsHandleCreated && !Quiet) ReloadWindows(); }
 
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool ShutdownBlockReasonCreate(IntPtr h, string reason);
+  [DllImport("user32.dll")] static extern bool ShutdownBlockReasonDestroy(IntPtr h);
+
   protected override void OnFormClosing(FormClosingEventArgs e) {
+    if (e.CloseReason == CloseReason.WindowsShutDown) {   // Windows is shutting down or the member is logging off: Windows closes the window next, so the file is finished now
+      SaveForShutdown();
+      base.OnFormClosing(e);
+      return;
+    }
     if (state != State.Idle) {   // finish the file first
       e.Cancel = true; closeWhenDone = true;
       if (state == State.Recording) BeginStop("Saving before closing…");
     }
     base.OnFormClosing(e);
+  }
+
+  // A recording in progress is stopped and saved on this thread (it is quick: the file is finished as it goes), with Windows told why it waits;
+  // no cue plays and nothing is left running. A save already under way is waited for. The close is then allowed.
+  void SaveForShutdown() {
+    if (state == State.Saving) { var d = stopDone; if (d != null) d.WaitOne(35000); return; }
+    if (state != State.Recording || current == null) return;
+    var rec = current;
+    state = State.Saving;
+    try { ShutdownBlockReasonCreate(Handle, "Saving the recording"); } catch (Exception) { }
+    RecordingResult res;
+    try { res = rec.Stop(); }
+    catch (Exception ex) { res = new RecordingResult { Message = "Stopping failed: " + ex.Message }; }
+    try { ShutdownBlockReasonDestroy(Handle); } catch (Exception) { }
+    LastResult = res;
+    state = State.Idle; UpdateButtons();
+    if (res.Ok) SetStatus("Saved " + Path.GetFileName(res.Mp4) + "  ·  " + FormatTime(res.Seconds) + "  ·  " + Megabytes(res.Bytes), Palette.Accent);
+    else SetStatus(res.Message, Palette.Red);
+    var handler = Saved; if (handler != null) handler(res);
   }
 
   protected override void OnFormClosed(FormClosedEventArgs e) { tick.Stop(); Palette.Changed -= OnPalette; if (!KeepEngine) Obs.Shutdown(); base.OnFormClosed(e); }
@@ -458,11 +486,13 @@ class MainForm : Form {
     if (state != State.Recording || current == null) return;
     state = State.Saving; UpdateButtons();
     var rec = current;
+    var done = stopDone = new ManualResetEvent(false);
     SetStatus(why ?? "Saving…", Palette.Muted);
     var t = new Thread(delegate() {
       RecordingResult res;
       try { res = rec.Stop(); }
       catch (Exception ex) { res = new RecordingResult { Message = "Stopping failed: " + ex.Message }; }
+      done.Set();
       Ui(delegate {
         LastResult = res;
         state = State.Idle; UpdateButtons(); Cue(res.Ok ? "stop" : "error");

@@ -160,10 +160,16 @@ static class Settings {
     int hue;
     object accent = int.TryParse(s.Accent, NumberStyles.Integer, CultureInfo.InvariantCulture, out hue) ? (object)hue : s.Accent;
     var d = new Dictionary<string, object> { { "EncoderProfile", s.EncoderProfile }, { "MaxHeight", s.MaxHeight }, { "CaptureMethod", s.CaptureMethod }, { "Sound", s.Sound }, { "Mic", s.Mic }, { "GpuPriority", s.GpuPriority }, { "Theme", s.ThemeId }, { "Accent", accent } };
+    // Written beside the file and flushed to the disk, then swapped in whole: File.Replace keeps the old file until the new one is in its place,
+    // so a crash or power loss at any moment leaves a complete prefs file (the old or the new), never none.
     string tmp = prefsFile + ".tmp";
-    File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
-    if (File.Exists(prefsFile)) File.Delete(prefsFile);
-    File.Move(tmp, prefsFile);
+    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None)) {
+      byte[] bytes = new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(d));
+      fs.Write(bytes, 0, bytes.Length);
+      fs.Flush(true);
+    }
+    if (File.Exists(prefsFile)) File.Replace(tmp, prefsFile, null);
+    else File.Move(tmp, prefsFile);
   }
 
   // DataFolder from the settings file, or null when the file is missing, isn't JSON, or holds no usable absolute folder.
@@ -181,6 +187,14 @@ static class Settings {
     string data = DataFolder(settingsFile);
     if (data != null) return Path.Combine(data, "logs");
     return Path.Combine(localAppData, "Bifrost Recorder", "logs");
+  }
+
+  // <DataFolder>\engine, or %LOCALAPPDATA%\Bifrost Recorder\engine without one: where the recording engine's plugins keep their own files
+  // (win-capture's compatibility list). Never the folder the Recorder happened to be started from.
+  public static string EngineConfigFolder(string settingsFile, string localAppData) {
+    string data = DataFolder(settingsFile);
+    if (data != null) return Path.Combine(data, "engine");
+    return Path.Combine(localAppData, "Bifrost Recorder", "engine");
   }
 
   // <DataFolder>\Recorder.prefs.json, or %LOCALAPPDATA%\Bifrost Recorder\prefs.json without one.
