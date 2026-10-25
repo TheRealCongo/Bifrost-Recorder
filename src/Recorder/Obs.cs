@@ -151,6 +151,8 @@ static class Obs {
   public static string CoreData { get { return Fwd(Path.Combine(Dir, @"obs\data\libobs")) + "/"; } }
   public static string Fwd(string path) { return path.Replace('\\', '/'); }
 
+  public static string ConfigFolder;   // where the plugins keep their files; null = the Recorder's data folder (Settings.EngineConfigFolder). The tests name their own.
+
   public static bool Started { get; private set; }
   public static string Version { get; private set; }
   public static readonly List<string> Encoders = new List<string>();   // every encoder libobs registered (the hardware ones only when their own test passed)
@@ -190,8 +192,12 @@ static class Obs {
     if (missing != null) return missing;
     try {
       ObsApi.base_set_log_handler(logHandler, IntPtr.Zero);
-      // No module config path: then win-capture keeps no files and never asks obsproject.com for compatibility updates.
-      if (!ObsApi.obs_startup(ObsApi.U("en-US"), null, IntPtr.Zero)) return "The recording engine (libobs) didn't start.";
+      // The plugins' own files go in the Recorder's data folder. Left out, libobs builds their paths from "" and win-capture writes its
+      // "win-capture" folder into whatever folder the Recorder was started from. win-capture does fetch its list of programs that need
+      // special handling from obsproject.com (meta.json holds the HTTP etag of the last answer); that fetch is OBS's own and isn't blocked.
+      string config = ConfigFolder ?? Settings.EngineConfigFolder(Path.Combine(Dir, Settings.FileName), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+      try { Directory.CreateDirectory(config); } catch (Exception) { }
+      if (!ObsApi.obs_startup(ObsApi.U("en-US"), ObsApi.U(Fwd(config)), IntPtr.Zero)) return "The recording engine (libobs) didn't start.";
     } catch (DllNotFoundException ex) {
       return "The recording engine couldn't load (" + ex.Message + "). Installing the Microsoft Visual C++ Redistributable (x64) may fix it.";
     } catch (BadImageFormatException ex) { return "The recording engine's files are damaged: " + ex.Message; }

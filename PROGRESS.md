@@ -30,9 +30,15 @@ hooks"). BattlEye trusts OBS's hook by its signature, so the hook is used exactl
   (`cf-lexer.c`). With `\` every shader failed to parse and `obs_reset_video` returned -1 with no message at all.
 - libobs looks for its helper programs (obs-nvenc-test.exe and the like) next to the running exe, not next to obs.dll, so obs.dll and its
   libraries sit beside BifrostRecorder.exe; plugins and data are in `obs\`.
-- Giving obs_startup no module config path keeps win-capture from fetching compatibility updates from obsproject.com and from keeping
-  files. Its hook still works: it then loads graphics-hook64.dll from the Recorder's own folder instead of copying it to
-  C:\ProgramData\obs-studio-hook, and no Vulkan layer is registered (Vulkan-only games fall back to window capture).
+- win-capture does fetch its compatibility list (the programs that need special handling) from obsproject.com in the background; the
+  etag of the last answer is in its meta.json. With no module config path to obs_startup, libobs builds win-capture's folder from "" and
+  writes `win-capture\` (compatibility.json, meta.json, package.json) into whatever folder the Recorder was started from. The Recorder
+  now gives obs_startup `<data folder>\engine` (`Settings.EngineConfigFolder`: beside the prefs and the logs), so the files live
+  there and nothing is written beside the program. The fetch itself is OBS's and isn't blocked.
+- Its hook still works with no module config path: it then loads graphics-hook64.dll from the Recorder's own folder instead of copying it
+  to C:\ProgramData\obs-studio-hook, and no Vulkan layer is registered (Vulkan-only games fall back to window capture). Giving the config
+  path changed none of that: after a full run with it, C:\ProgramData\obs-studio-hook and HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers
+  were untouched and the game capture checks on FakeGame still pass.
 - libobs never captures a window of its own process (`window-helpers.c`), so the tests' recorded windows run in child processes.
 - libobs's SDR white level is 0 until `obs_set_video_levels` is called (OBS Studio's frontend sets 300 and 1000 nits). Windows hands a
   window or screen on an HDR monitor over as 16-bit float, libobs tone-maps it with 80 / white level, and with 0 every window recording
