@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Bifrost Recorder's window: the windows you can record down the middle, Record and Stop at the bottom. Painted in the
+// USASOC Recorder's window: the windows you can record down the middle, Record and Stop at the bottom. Painted in the
 // Bifrost console style (Look.cs). Everything a test needs to drive it, and to take its picture, is public at the bottom.
 using System;
 using System.Collections.Generic;
@@ -67,7 +67,7 @@ class MainForm : Form {
   const string WebsiteVideos = "https://taskforcehalberd.org/hub/videos";
 
   public MainForm() {
-    Text = "Bifrost Recorder";
+    Text = "USASOC Recorder";
     BackColor = Palette.Bg; ForeColor = Palette.Fg;
     KeyPreview = true;
     SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
@@ -212,7 +212,7 @@ class MainForm : Form {
     ReloadWindows();
     tick.Start();
     engineMissing = Obs.Missing();
-    if (engineMissing != null) { SetStatus(engineMissing + " Reinstall Bifrost Recorder.", Palette.Red); encoderText = "No recording engine"; UpdateButtons(); Invalidate(); return; }
+    if (engineMissing != null) { SetStatus(engineMissing + " Reinstall USASOC Recorder.", Palette.Red); encoderText = "No recording engine"; UpdateButtons(); Invalidate(); return; }
     // The engine starts now, on its own thread (Obs.cs says why not at the first Record). Until it is ready the chip names the encoder for the
     // GPU's maker and Record waits; then the chip names the encoder that really works here.
     if (SkipEncoderCheck) { encoderText = "Encoder not checked (test)"; Invalidate(); return; }
@@ -364,7 +364,7 @@ class MainForm : Form {
     using (var b = new SolidBrush(Palette.Band)) g.FillRectangle(b, 0, 0, w, P(HeaderH));
     using (var b = new SolidBrush(Palette.Accent)) g.FillRectangle(b, 0, P(HeaderH) - P(2), w, P(2));
     DrawRecDot(g, P(Side), P(30), P(26), state == State.Recording);
-    using (var b = new SolidBrush(Palette.Fg)) g.DrawString("Bifrost Recorder", Fonts.Get(Fonts.UiBold, P(30)), b, P(Side + 40), P(16));
+    using (var b = new SolidBrush(Palette.Fg)) g.DrawString("USASOC Recorder", Fonts.Get(Fonts.UiBold, P(30)), b, P(Side + 40), P(16));
     using (var b = new SolidBrush(Palette.Soft)) g.DrawString("Record a game or program, light on your PC", Fonts.Get(Fonts.Ui, P(15)), b, P(Side + 42), P(56));
     var badgeFont = Fonts.Get(Fonts.Mono, P(12));
     var sz = g.MeasureString(encoderText, badgeFont);

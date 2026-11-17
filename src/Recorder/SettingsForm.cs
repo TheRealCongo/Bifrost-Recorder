@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The Settings window. Two pages: RECORDING, the six choices a recording is made with, in plain words with a short hint under each (a change
 // applies to the next recording and is saved at once; greyed while a recording runs), and APPEARANCE, the theme presets and the accent, as in
-// the other Bifrost apps (applied live). The caller's `changed` saves the prefs file and refreshes the header chip and the colours.
+// the other USASOC apps (applied live). The caller's `changed` saves the prefs file and refreshes the header chip and the colours.
 // Painted in the Bifrost console style (Look.cs), from the theme in use. C# 5.
 using System;
 using System.Collections.Generic;
@@ -182,7 +182,7 @@ class SettingsForm : Form {
 
   public SettingsForm(AppSettings cfg, Func<bool> busy, Action changed) {
     this.cfg = cfg; this.busy = busy; this.changed = changed;
-    Text = "Bifrost Recorder settings";
+    Text = "USASOC Recorder settings";
     FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
     SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
     using (var g = Graphics.FromHwnd(IntPtr.Zero)) S = g.DpiX / 96f;

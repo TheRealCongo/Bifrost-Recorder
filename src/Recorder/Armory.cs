@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Sending a recording to the TFH Armory's video library, by the website's contract (25vid-Website docs/ARMORY.md, "Videos"):
+// Sending a recording to the USASOC Armory's video library, by the website's contract (25vid-Website docs/ARMORY.md, "Videos"):
 //   GET  /api/armory/videos/me, /options
 //   POST /api/armory/videos/uploads {folder_id, category_id, filename, size, title?, duration?, accept_terms:true} -> {upload_id, part_size, part_count, part_urls_max}
 //   POST /api/armory/videos/uploads/{id}/parts {numbers:[..]} -> {urls:{"1":"https://..."}}   (signed URLs, up to 50)
 //   PUT  <signed url>  the part's raw bytes, straight to the bucket (up to 4 at a time, each retried with a fresh URL)
 //   POST /api/armory/videos/uploads/{id}/complete -> the receipt;   DELETE /api/armory/videos/uploads/{id} to cancel
 // The member's key goes in the X-Armory-Key header of the calls to the team server and NOWHERE else: not to the bucket, not into a
-// log, a message or a file. The team server must be https (plain http only for this PC, like Bifrost Suite); the bucket's signed URLs
+// log, a message or a file. The team server must be https (plain http only for this PC, like USASOC Suite); the bucket's signed URLs
 // must be https too; no redirect is ever followed (the key, or the file, would go wherever it points). C# 5, no NuGet.
 using System;
 using System.Collections.Generic;

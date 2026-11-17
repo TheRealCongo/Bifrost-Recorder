@@ -11,8 +11,8 @@ using System.Web.Script.Serialization;
 // The choices a recording is made with. They come from, in order of weight: the member's own choices in the Settings window (the prefs file),
 // the experiment keys in BifrostRecorder.settings.json, and the defaults below.
 class AppSettings {
-  public string DataFolder;                  // null when the file gave none (Bifrost Suite's)
-  public string TeamServer, TeamKey;         // the Armory, from the same file Bifrost Suite writes for Planner; the key is never shown, logged or written by the Recorder
+  public string DataFolder;                  // null when the file gave none (USASOC Suite's)
+  public string TeamServer, TeamKey;         // the Armory, from the same file USASOC Suite writes for Planner; the key is never shown, logged or written by the Recorder
   // ---- the six choices of the Settings window
   public string EncoderProfile = "standard"; // standard = the light set, best for games | quality = spatial AQ and B-frames, for desktop apps
   public int MaxHeight;                      // 0 = record at the window's own size | 1080 | 720
@@ -89,7 +89,7 @@ static class SettingChoices {
   }
 }
 
-// BifrostRecorder.settings.json beside the program: Bifrost Suite writes it with DataFolder, the Recorder's work folder (and rewrites it whole on
+// BifrostRecorder.settings.json beside the program: USASOC Suite writes it with DataFolder, the Recorder's work folder (and rewrites it whole on
 // every install or update, so a choice kept there would be lost: the member's own choices are kept in the prefs file instead).
 static class Settings {
   public const string FileName = "BifrostRecorder.settings.json";
@@ -154,7 +154,7 @@ static class Settings {
     return s;
   }
 
-  // The member's choices, written beside the Recorder's other data, never in the file Bifrost Suite rewrites. Throws on a disk error (the caller says so).
+  // The member's choices, written beside the Recorder's other data, never in the file USASOC Suite rewrites. Throws on a disk error (the caller says so).
   public static void SavePrefs(string prefsFile, AppSettings s) {
     Directory.CreateDirectory(Path.GetDirectoryName(prefsFile));
     int hue;
@@ -175,18 +175,23 @@ static class Settings {
   // DataFolder from the settings file, or null when the file is missing, isn't JSON, or holds no usable absolute folder.
   public static string DataFolder(string settingsFile) { return Load(settingsFile).DataFolder; }
 
-  // <DataFolder>\Recordings, or %USERPROFILE%\Videos\Bifrost Recorder when Bifrost Suite hasn't given a folder.
+  // <DataFolder>\Recordings, or %USERPROFILE%\Videos\USASOC Recorder when USASOC Suite hasn't given a folder (Videos\Bifrost
+  // Recorder when that one was made before the rename and there is no USASOC Recorder yet, so earlier recordings stay in view).
   public static string RecordingsFolder(string settingsFile, string userProfile) {
     string data = DataFolder(settingsFile);
     if (data != null) return Path.Combine(data, "Recordings");
-    return Path.Combine(userProfile, "Videos", "Bifrost Recorder");
+    string now = Path.Combine(userProfile, "Videos", "USASOC Recorder"), before = Path.Combine(userProfile, "Videos", "Bifrost Recorder");
+    return !Directory.Exists(now) && Directory.Exists(before) ? before : now;
   }
+
+  // The app's own files without a DataFolder keep the folder name from before the rename (LocalFolder), so nothing is lost.
+  const string LocalFolder = "Bifrost Recorder";
 
   // <DataFolder>\logs, or %LOCALAPPDATA%\Bifrost Recorder\logs without one. Never inside the recordings folder.
   public static string LogsFolder(string settingsFile, string localAppData) {
     string data = DataFolder(settingsFile);
     if (data != null) return Path.Combine(data, "logs");
-    return Path.Combine(localAppData, "Bifrost Recorder", "logs");
+    return Path.Combine(localAppData, LocalFolder, "logs");
   }
 
   // <DataFolder>\engine, or %LOCALAPPDATA%\Bifrost Recorder\engine without one: where the recording engine's plugins keep their own files
@@ -194,14 +199,14 @@ static class Settings {
   public static string EngineConfigFolder(string settingsFile, string localAppData) {
     string data = DataFolder(settingsFile);
     if (data != null) return Path.Combine(data, "engine");
-    return Path.Combine(localAppData, "Bifrost Recorder", "engine");
+    return Path.Combine(localAppData, LocalFolder, "engine");
   }
 
   // <DataFolder>\Recorder.prefs.json, or %LOCALAPPDATA%\Bifrost Recorder\prefs.json without one.
   public static string PrefsFile(string settingsFile, string localAppData) {
     string data = DataFolder(settingsFile);
     if (data != null) return Path.Combine(data, "Recorder.prefs.json");
-    return Path.Combine(localAppData, "Bifrost Recorder", "prefs.json");
+    return Path.Combine(localAppData, LocalFolder, "prefs.json");
   }
 }
 

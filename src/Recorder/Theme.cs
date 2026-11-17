@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The Bifrost apps' colours: five theme presets that set every interface colour, and one adjustable accent on top. A port of Bifrost Scribe's
+// The USASOC apps' colours: five theme presets that set every interface colour, and one adjustable accent on top. A port of USASOC Scribe's
 // src/shared/theme.ts (itself Studio's colour maths and Planner's presets), token for token, so a given theme and accent look identical in
 // Scribe and here. Pure (no drawing, no windows): the tests check the maths. The Recorder's own icon is never themed. C# 5.
 using System;

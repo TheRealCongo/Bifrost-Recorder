@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// What the tests ask about a recorded file, with ffmpeg and ffprobe from Bifrost Studio (build\testbin, test only: the Recorder itself
+// What the tests ask about a recorded file, with ffmpeg and ffprobe from USASOC Studio (build\testbin, test only: the Recorder itself
 // doesn't ship them). C# 5 for Windows' own compiler.
 using System;
 using System.Collections.Generic;

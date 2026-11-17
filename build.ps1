@@ -1,8 +1,8 @@
-# Builds Bifrost Recorder with Windows' own C# compiler (C# 5, .NET Framework 4.x): nothing to install.
+# Builds USASOC Recorder with Windows' own C# compiler (C# 5, .NET Framework 4.x): nothing to install.
 #   build\BifrostRecorder.exe   the Recorder
 #   build\*.dll, build\obs\     libobs and the parts of it the Recorder uses, copied unmodified from OBS Studio's official release (see THIRD-PARTY-NOTICES.md)
 #   build\LICENSE, build\THIRD-PARTY-NOTICES.md, build\licenses\   the licenses that travel with the program
-#   build\RecorderTests.exe     the automated tests (test only); build\testbin\ holds ffprobe for them, from Bifrost Studio (test only)
+#   build\RecorderTests.exe     the automated tests (test only); build\testbin\ holds ffprobe for them, from USASOC Studio (test only)
 # The OBS release is fetched once into deps\ (not in git) and checked against its published SHA-256 before anything is used.
 # -Test runs build\RecorderTests.exe after building and fails if any test does. -Version sets the program's version.
 # Works in Windows PowerShell 5.1 and PowerShell 7.
@@ -36,7 +36,7 @@ function VersionFile([string]$title, [string]$description) {
   @"
 using System.Reflection;
 [assembly: AssemblyTitle("$title")]
-[assembly: AssemblyProduct("Bifrost Suite")]
+[assembly: AssemblyProduct("USASOC Suite")]
 [assembly: AssemblyDescription("$description")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 TheRealCongo. GPL-2.0-or-later; see THIRD-PARTY-NOTICES.md")]
 [assembly: AssemblyVersion("$assemblyVersion")]
@@ -48,7 +48,7 @@ using System.Reflection;
 
 # libobs talks to native 64-bit DLLs, so the Recorder is built for x64 only.
 $app = Get-ChildItem (Join-Path $root "src\Recorder") -Filter *.cs | ForEach-Object FullName
-$versionFile = VersionFile "Bifrost Recorder" "Records a game or program, light on your PC"
+$versionFile = VersionFile "USASOC Recorder" "Records a game or program, light on your PC"
 try { Compile "winexe" (Join-Path $build "BifrostRecorder.exe") ($app + $versionFile) @(("/win32icon:" + (Join-Path $root "assets\icon.ico"))) }   # windows subsystem: it never has a console
 finally { Remove-Item $versionFile -ErrorAction SilentlyContinue }
 
@@ -116,7 +116,7 @@ foreach ($f in "LICENSE", "THIRD-PARTY-NOTICES.md") { Copy-Item (Join-Path $root
 $lic = Join-Path $root "licenses"
 Get-ChildItem $lic -Recurse -File | ForEach-Object { CopyIfChanged $_.FullName (Join-Path $build ("licenses\" + $_.FullName.Substring($lic.Length + 1))) }
 
-# Test only: ffprobe to check the recordings, from the copy Bifrost Studio ships, kept apart from the Recorder's own libraries.
+# Test only: ffprobe to check the recordings, from the copy USASOC Studio ships, kept apart from the Recorder's own libraries.
 $studioBin = Join-Path $env:USERPROFILE "Bifrost Suite AppData\Bifrost Studio\resources\bin"
 if (Test-Path (Join-Path $studioBin "ffprobe.exe")) {
   foreach ($f in (Get-ChildItem $studioBin -File)) { CopyIfChanged $f.FullName (Join-Path $build ("testbin\" + $f.Name)) }

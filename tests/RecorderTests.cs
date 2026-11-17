@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Tests for Bifrost Recorder: run build\RecorderTests.exe after build.ps1 (or build.ps1 -Test).
+// Tests for USASOC Recorder: run build\RecorderTests.exe after build.ps1 (or build.ps1 -Test).
 //   no arguments   the unit tests, the engine (libobs), the end-to-end tests, then the window tests
 //   --unit         the unit tests only (no GPU, no windows: safe while a game runs)
 //   --ui           the window tests only (no capture, no encoder)
@@ -27,7 +27,7 @@ static class RecorderTests {
   static int passed, failed;
   static string project, build, outDir, shotsDir, throwDir;
   static Watcher watcher;
-  const string WindowPrefix = "Bifrost Recorder test window";
+  const string WindowPrefix = "USASOC Recorder test window";
 
   static void Check(string name, bool ok, string detail = null) {
     if (ok) passed++; else failed++;
@@ -173,14 +173,14 @@ static class RecorderTests {
 
     // settings and the recordings folder
     string good = Path.Combine(tmp, "good.json");
-    File.WriteAllText(good, "{\"ManagedBy\":\"Bifrost Suite\",\"DataFolder\":\"D:\\\\Bifrost Suite\\\\Bifrost Recorder\"}");
-    Check("DataFolder gives <DataFolder>\\Recordings", Settings.RecordingsFolder(good, profile) == @"D:\Bifrost Suite\Bifrost Recorder\Recordings", Settings.RecordingsFolder(good, profile));
-    Check("no settings file falls back to Videos\\Bifrost Recorder", Settings.RecordingsFolder(Path.Combine(tmp, "none.json"), profile) == @"C:\Users\Someone\Videos\Bifrost Recorder");
+    File.WriteAllText(good, "{\"ManagedBy\":\"USASOC Suite\",\"DataFolder\":\"D:\\\\USASOC Suite\\\\USASOC Recorder\"}");
+    Check("DataFolder gives <DataFolder>\\Recordings", Settings.RecordingsFolder(good, profile) == @"D:\USASOC Suite\USASOC Recorder\Recordings", Settings.RecordingsFolder(good, profile));
+    Check("no settings file falls back to Videos\\USASOC Recorder", Settings.RecordingsFolder(Path.Combine(tmp, "none.json"), profile) == @"C:\Users\Someone\Videos\USASOC Recorder");
     string bad = Path.Combine(tmp, "bad.json"); File.WriteAllText(bad, "{ not json");
-    Check("a settings file that isn't JSON falls back", Settings.RecordingsFolder(bad, profile) == @"C:\Users\Someone\Videos\Bifrost Recorder");
+    Check("a settings file that isn't JSON falls back", Settings.RecordingsFolder(bad, profile) == @"C:\Users\Someone\Videos\USASOC Recorder");
     foreach (string body in new[] { "{}", "{\"DataFolder\":\"\"}", "{\"DataFolder\":\"   \"}", "{\"DataFolder\":\"relative\\\\path\"}", "{\"DataFolder\":5}", "{\"DataFolder\":null}", "[1,2]" }) {
       File.WriteAllText(bad, body);
-      Check("settings " + body + " falls back", Settings.RecordingsFolder(bad, profile) == @"C:\Users\Someone\Videos\Bifrost Recorder");
+      Check("settings " + body + " falls back", Settings.RecordingsFolder(bad, profile) == @"C:\Users\Someone\Videos\USASOC Recorder");
     }
     File.WriteAllText(bad, "{\"DataFolder\":\"E:\\\\Data\\\\\"}");
     Check("a DataFolder with a trailing slash still gives one Recordings folder", Settings.RecordingsFolder(bad, profile) == @"E:\Data\Recordings", Settings.RecordingsFolder(bad, profile));
@@ -217,7 +217,7 @@ static class RecorderTests {
     Check("window: cloaked is not", !Native.Capturable(true, "Arma", true, false, false, false, other, me, "X"));
     Check("window: a tool window is not, unless it says it's an app window", !Native.Capturable(true, "T", false, true, false, false, other, me, "X") && Native.Capturable(true, "T", false, true, true, false, other, me, "X"));
     Check("window: an owned window (a dialog) is not", !Native.Capturable(true, "Dlg", false, false, false, true, other, me, "X"));
-    Check("window: the Recorder itself is not", !Native.Capturable(true, "Bifrost Recorder", false, false, false, false, me, me, "X"));
+    Check("window: the Recorder itself is not", !Native.Capturable(true, "USASOC Recorder", false, false, false, false, me, me, "X"));
     Check("window: the desktop is not", !Native.Capturable(true, "Program Manager", false, false, false, false, other, me, "Progman"));
     var found = Native.ListWindows();
     bool sane = true; uint own = (uint)Process.GetCurrentProcess().Id;
@@ -279,9 +279,9 @@ static class RecorderTests {
   static void UnitsSettings(string tmp) {
     // the switches in BifrostRecorder.settings.json
     string sw = Path.Combine(tmp, "switches.json");
-    File.WriteAllText(sw, "{\"ManagedBy\":\"Bifrost Suite\",\"DataFolder\":\"D:\\\\Suite\\\\Bifrost Recorder\",\"EncoderProfile\":\"gentle\",\"MaxHeight\":1080,\"GpuPriority\":\"normal\"}");
+    File.WriteAllText(sw, "{\"ManagedBy\":\"USASOC Suite\",\"DataFolder\":\"D:\\\\Suite\\\\USASOC Recorder\",\"EncoderProfile\":\"gentle\",\"MaxHeight\":1080,\"GpuPriority\":\"normal\"}");
     var c = Settings.Load(sw);
-    Check("switches are read: gentle (the 0.1.1 name) means standard, 1080, normal, and DataFolder beside them", c.EncoderProfile == "standard" && !c.Quality && c.MaxHeight == 1080 && c.GpuPriority == "normal" && c.DataFolder == @"D:\Suite\Bifrost Recorder", c.EncoderProfile + " " + c.MaxHeight + " " + c.GpuPriority);
+    Check("switches are read: gentle (the 0.1.1 name) means standard, 1080, normal, and DataFolder beside them", c.EncoderProfile == "standard" && !c.Quality && c.MaxHeight == 1080 && c.GpuPriority == "normal" && c.DataFolder == @"D:\Suite\USASOC Recorder", c.EncoderProfile + " " + c.MaxHeight + " " + c.GpuPriority);
     var d = Settings.Load(Path.Combine(tmp, "absent.json"));
     Check("no settings file: standard, native size, game capture, the program's sound, no mic, GPU normal, no DataFolder", !d.Quality && d.EncoderProfile == "standard" && d.MaxHeight == 0 && d.CaptureMethod == "game" && d.Sound == "game" && d.Mic == "off" && d.GpuPriority == "normal" && d.DataFolder == null);
     File.WriteAllText(sw, "{\"EncoderProfile\":\"turbo\",\"MaxHeight\":\"1080\",\"GpuPriority\":\"max\"}");
@@ -295,10 +295,10 @@ static class RecorderTests {
     File.WriteAllText(sw, "{\"MaxHeight\":0}"); Check("MaxHeight 0 means native", Settings.Load(sw).MaxHeight == 0);
     File.WriteAllText(sw, "{\"MaxHeight\":true}"); Check("MaxHeight true is not a number", Settings.Load(sw).MaxHeight == 0);
     File.WriteAllText(sw, "{\"EncoderProfile\":\"standard\",\"MaxHeight\":0,\"GpuPriority\":\"high\"}");
-    Check("a settings file without DataFolder still saves to %USERPROFILE%\\Videos\\Bifrost Recorder", Settings.RecordingsFolder(sw, @"C:\Users\Someone") == @"C:\Users\Someone\Videos\Bifrost Recorder");
-    Check("logs: %LOCALAPPDATA%\\Bifrost Recorder\\logs without a DataFolder", Settings.LogsFolder(sw, @"C:\Users\Someone\AppData\Local") == @"C:\Users\Someone\AppData\Local\Bifrost Recorder\logs");
-    File.WriteAllText(sw, "{\"DataFolder\":\"D:\\\\Suite\\\\Bifrost Recorder\"}");
-    Check("logs: <DataFolder>\\logs, and never the recordings folder", Settings.LogsFolder(sw, @"C:\L") == @"D:\Suite\Bifrost Recorder\logs" && Settings.LogsFolder(sw, @"C:\L") != Settings.RecordingsFolder(sw, @"C:\U") && !Settings.LogsFolder(sw, @"C:\L").StartsWith(Settings.RecordingsFolder(sw, @"C:\U")));
+    Check("a settings file without DataFolder still saves to %USERPROFILE%\\Videos\\USASOC Recorder", Settings.RecordingsFolder(sw, @"C:\Users\Someone") == @"C:\Users\Someone\Videos\USASOC Recorder");
+    Check("logs: %LOCALAPPDATA%\\Bifrost Recorder\\logs without a DataFolder (the name from before the rename)", Settings.LogsFolder(sw, @"C:\Users\Someone\AppData\Local") == @"C:\Users\Someone\AppData\Local\Bifrost Recorder\logs");
+    File.WriteAllText(sw, "{\"DataFolder\":\"D:\\\\Suite\\\\USASOC Recorder\"}");
+    Check("logs: <DataFolder>\\logs, and never the recordings folder", Settings.LogsFolder(sw, @"C:\L") == @"D:\Suite\USASOC Recorder\logs" && Settings.LogsFolder(sw, @"C:\L") != Settings.RecordingsFolder(sw, @"C:\U") && !Settings.LogsFolder(sw, @"C:\L").StartsWith(Settings.RecordingsFolder(sw, @"C:\U")));
     File.WriteAllText(sw, "{\"FrameRateMode\":\"vfr\",\"EncoderCheck\":\"startup\",\"CaptureMethod\":\"window\"}");
     c = Settings.Load(sw);
     Check("keys of older versions (FrameRateMode, EncoderCheck) are ignored and the rest is read", c.CaptureMethod == "window");

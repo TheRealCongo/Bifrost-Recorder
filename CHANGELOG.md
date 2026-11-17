@@ -1,7 +1,10 @@
-# Bifrost Recorder changelog
+# USASOC Recorder changelog
+
+## 0.3.0
+- Bifrost Recorder is now USASOC Recorder: the same app, settings and recordings, with the new name on the window and the taskbar.
 
 ## 0.2.0
-- Records with OBS Studio's engine (libobs, from OBS Studio 32.2.2, unchanged). Bifrost Recorder is now open source (GPL-2.0-or-later) and is not made or endorsed by the OBS Project.
+- Records with OBS Studio's engine (libobs, from OBS Studio 32.2.2, unchanged). USASOC Recorder is now open source (GPL-2.0-or-later) and is not made or endorsed by the OBS Project.
 - Game capture is the new default: OBS's own hook copies each frame inside the game, the way OBS and Medal record games, instead of competing with the game for the GPU. Programs that can't be hooked fall back to window capture by themselves after a few seconds.
 - Sound: the chosen program's own sound (or everything the PC plays), and the microphone if you turn it on. With the mic on, recordings have three tracks: Mix, Game and Mic.
 - Settings: Capture (game capture, this window, or the whole screen), Sound and Microphone are new; Frame rate is gone (recordings are always a steady 60 fps). The whole-screen choice now follows Resolution too.
@@ -12,10 +15,10 @@
 
 ## 0.1.3
 - A Settings window (the Settings button by Refresh): Light or Quality encoder, Native, 1080p or 720p, This window or the whole screen, steady 60 fps or only real frames, GPU priority. Changes apply to the next recording and are saved at once; the header shows what is active.
-- Appearance in Settings, as in the other Bifrost apps: five themes (Console, Midnight, OD green, Paper, High contrast) and an accent (the theme's own, a swatch or a hue slider), applied live. The app icon keeps its own colours.
-- Your choices are kept in their own file (Recorder.prefs.json beside the Recorder's data) that Bifrost Suite never rewrites. A damaged file says so and the defaults are used.
+- Appearance in Settings, as in the other USASOC apps: five themes (Console, Midnight, OD green, Paper, High contrast) and an accent (the theme's own, a swatch or a hue slider), applied live. The app icon keeps its own colours.
+- Your choices are kept in their own file (Recorder.prefs.json beside the Recorder's data) that USASOC Suite never rewrites. A damaged file says so and the defaults are used.
 - Easier on the GPU by default: the light encoder, normal GPU priority, and the encoder is chosen from the graphics card's maker without a test encode (another encoder is tried, and the status line says so, only if the first one doesn't start).
-- Upload to Armory after a recording (with a key from Bifrost Suite, else the website's page opens), a start/stop key (Ctrl+Alt+R, or Ctrl+Alt+Shift+R if that is taken) and a short beep on start and stop, and the Recorder's own icon.
+- Upload to Armory after a recording (with a key from USASOC Suite, else the website's page opens), a start/stop key (Ctrl+Alt+R, or Ctrl+Alt+Shift+R if that is taken) and a short beep on start and stop, and the Recorder's own icon.
 
 ## 0.1.2
 - Screen capture switch (`"CaptureMethod": "screen"` in BifrostRecorder.settings.json): records the whole monitor the chosen window is on.

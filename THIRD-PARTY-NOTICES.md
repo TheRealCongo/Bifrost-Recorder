@@ -1,22 +1,22 @@
-# Bifrost Recorder: third-party notices
+# USASOC Recorder: third-party notices
 
-Bifrost Recorder is free software under the GNU General Public License, version 2 or (at your option) any later version
+USASOC Recorder is free software under the GNU General Public License, version 2 or (at your option) any later version
 (`LICENSE`). Copyright (C) 2026 TheRealCongo.
 
 It records with **libobs**, the engine of OBS Studio, and ships files from the official Windows release of
-**OBS Studio 32.2.2** unchanged (same bytes, same code signatures). Bifrost Recorder is a separate program: it is not
+**OBS Studio 32.2.2** unchanged (same bytes, same code signatures). USASOC Recorder is a separate program: it is not
 part of OBS Studio, and it is not made, endorsed or supported by the OBS Project. "OBS" and "OBS Studio" are names of
 the OBS Project, used here only to say where these files come from.
 
 The ffmpeg libraries in OBS Studio's release are built with `--enable-gpl --enable-version3`, so they are licensed
-under the GNU GPL version 3 or later. Taken together, the files in a Bifrost Recorder package are therefore conveyed
+under the GNU GPL version 3 or later. Taken together, the files in a USASOC Recorder package are therefore conveyed
 under the terms of the **GNU GPL version 3** (`licenses/GPL-3.0.txt`), which every GPL-2.0-or-later part allows.
 
 ## What is in the package
 
 | Files (next to `BifrostRecorder.exe` unless noted) | Project and version | License |
 |---|---|---|
-| `BifrostRecorder.exe` | Bifrost Recorder | GPL-2.0-or-later |
+| `BifrostRecorder.exe` | USASOC Recorder | GPL-2.0-or-later |
 | `obs.dll`, `libobs-d3d11.dll`, `libobs-winrt.dll`, `obs-nvenc-test.exe`, `obs-amf-test.exe`, `obs-qsv-test.exe`, `obs\obs-plugins\64bit\` (win-capture, win-wasapi, obs-ffmpeg, obs-nvenc, obs-qsv11, obs-x264, obs-outputs), `obs\data\` (with the game capture hook `graphics-hook64.dll`/`graphics-hook32.dll` and its helpers) | OBS Studio 32.2.2 | GPL-2.0-or-later (`licenses/obs-studio/COPYING`) |
 | `w32-pthreads.dll` | pthreads-win32, as kept in OBS Studio's source | LGPL-2.1-or-later (`licenses/obs-studio/w32-pthreads/`) |
 | inside `obs.dll`: libcaption, libnsgif | as kept in OBS Studio's source | MIT (`licenses/obs-studio/libcaption/`, `licenses/obs-studio/libnsgif/`) |
@@ -35,23 +35,23 @@ The libraries come from obs-deps release `2026-07-15`, the one OBS Studio 32.2.2
 
 ## Where the source is
 
-Everything below is the complete corresponding source for the files in a Bifrost Recorder package, available at no
+Everything below is the complete corresponding source for the files in a USASOC Recorder package, available at no
 charge.
 
-- **Bifrost Recorder:** https://github.com/TheRealCongo/Bifrost-Recorder, at the tag of the release (`build.ps1`
+- **USASOC Recorder:** https://github.com/TheRealCongo/Bifrost-Recorder, at the tag of the release (`build.ps1`
   builds it, and copies the OBS files listed above out of OBS Studio's release).
-- **OBS Studio 32.2.2:** `OBS-Studio-32.2.2-Sources.tar.gz`, attached to every Bifrost Recorder release on GitHub
+- **OBS Studio 32.2.2:** `OBS-Studio-32.2.2-Sources.tar.gz`, attached to every USASOC Recorder release on GitHub
   that contains OBS Studio 32.2.2, and at https://github.com/obsproject/obs-studio/releases/tag/32.2.2.
 - **The libraries above:** https://github.com/obsproject/obs-deps/tree/2026-07-15 holds the build scripts and patches
   used, and each script names its upstream source by address and commit or checksum (for example FFmpeg at
   https://github.com/FFmpeg/FFmpeg, commit 38b88335f99e76ed89ff3c93f877fdefce736c13).
 
 **Written offer.** If any of these addresses stops working, TheRealCongo will provide the complete corresponding
-source of any file in a Bifrost Recorder package, on request through
+source of any file in a USASOC Recorder package, on request through
 https://github.com/TheRealCongo/Bifrost-Recorder/issues, for at least three years after the last release that
 contained it, at no charge beyond the cost of physically performing the transfer.
 
 ## Modifications
 
-None of the OBS Studio or obs-deps files is modified. Bifrost Recorder calls libobs through its public C interface
+None of the OBS Studio or obs-deps files is modified. USASOC Recorder calls libobs through its public C interface
 (`src/Recorder/Obs.cs`).

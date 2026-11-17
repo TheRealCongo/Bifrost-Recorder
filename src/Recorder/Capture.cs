@@ -219,7 +219,7 @@ class Recording {
   bool UseCapture(string method) {
     if (video != IntPtr.Zero) { ObsApi.obs_source_release(video); video = IntPtr.Zero; }
     if (scene != IntPtr.Zero) { ObsApi.obs_set_output_source(0, IntPtr.Zero); ObsApi.obs_scene_release(scene); }
-    scene = ObsApi.obs_scene_create(ObsApi.U("Bifrost Recorder"));
+    scene = ObsApi.obs_scene_create(ObsApi.U("USASOC Recorder"));
     video = Create(Sources.Id(method), "Capture", Sources.VideoSettings(method, Spec, screen != null ? screen.DeviceName : null));
     if (video == IntPtr.Zero) { log.Line("libobs has no " + Sources.Id(method) + " source"); return false; }
     IntPtr item = ObsApi.obs_scene_add(scene, video);
@@ -319,7 +319,7 @@ class Recording {
       if (!existed) File.Delete(Mp4Path);
     } catch (Exception ex) { error = "Can't write to the recordings folder: " + ex.Message; log.Line(error); log.Close(); return false; }
     Obs.Sink = LogLine;   // libobs's own messages go to this recording's log
-    log.Line("Bifrost Recorder " + Application.ProductVersion + " with libobs " + Obs.Version + " (OBS Studio's engine)");
+    log.Line("USASOC Recorder " + Application.ProductVersion + " with libobs " + Obs.Version + " (OBS Studio's engine)");
     lock (Obs.StartupLog) {   // the first recording's log also gets the engine's start: the GPUs, the monitors, which encoders passed their tests
       if (Obs.StartupLog.Count > 0) { log.Line("---- the engine's start"); foreach (string l in Obs.StartupLog) log.Line(l); log.Line("---- end of the engine's start"); Obs.StartupLog.Clear(); }
     }

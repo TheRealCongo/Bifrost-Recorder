@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Bifrost Recorder: records one window (a game or a program) with libobs, OBS Studio's engine, whose files are beside it (Obs.cs).
-// BifrostRecorder.settings.json beside the program (written by Bifrost Suite) holds DataFolder; recordings go to
-// <DataFolder>\Recordings, or to %USERPROFILE%\Videos\Bifrost Recorder without it.
+// USASOC Recorder: records one window (a game or a program) with libobs, OBS Studio's engine, whose files are beside it (Obs.cs).
+// BifrostRecorder.settings.json beside the program (written by USASOC Suite) holds DataFolder; recordings go to
+// <DataFolder>\Recordings, or to %USERPROFILE%\Videos\USASOC Recorder without it.
 using System;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;

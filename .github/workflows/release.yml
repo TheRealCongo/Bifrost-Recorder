@@ -1,17 +1,17 @@
 name: Release
 
-# Bifrost Recorder: a v* tag (e.g. v0.2.0) builds it with Windows' own C# compiler and OBS Studio's official runtime (pinned
+# USASOC Recorder: a v* tag (e.g. v0.2.0) builds it with Windows' own C# compiler and OBS Studio's official runtime (pinned
 # by version and SHA-256 in build.ps1), runs the unit tests, makes a GitHub release with the changelog, the program and OBS
 # Studio's matching source (GPL), and publishes BifrostRecorder.zip (one "BifrostRecorder" folder holding
-# BifrostRecorder.exe) to the TFH Armory as ?app=recorder, where Bifrost Suite installs and updates it.
+# BifrostRecorder.exe) to the USASOC Armory as ?app=recorder, where USASOC Suite installs and updates it.
 # Only the unit tests run here: the capture, encoder and window tests need a real GPU and desktop, so the full suite
 # (build\RecorderTests.exe) runs on a PC before tagging, never next to a running game.
-# Needs the ARMORY_RECORDER_PUBLISH_TOKEN secret (Bifrost Recorder's publish token on the website); without it the build
+# Needs the ARMORY_RECORDER_PUBLISH_TOKEN secret (USASOC Recorder's publish token on the website); without it the build
 # and the GitHub release still happen and the Armory publish is skipped with a warning. Optional variable ARMORY_SERVER
 # overrides https://taskforcehalberd.org; with the ARMORY_ORIGIN_IP secret the runner publishes straight to the origin
-# server on port 9443, past Cloudflare's bot challenge, as the other Bifrost apps' workflows do.
+# server on port 9443, past Cloudflare's bot challenge, as the other USASOC apps' workflows do.
 # The tag is the version (v1.2.3 = 1.2.3), and CHANGELOG.md must have a "## <version>" section in plain words.
-# Release order: the website's Armory entry first, then Bifrost Suite, then this.
+# Release order: the website's Armory entry first, then USASOC Suite, then this.
 
 on:
   push:
@@ -52,10 +52,10 @@ jobs:
           $m = [regex]::Match($text, "(?ms)^## $([regex]::Escape($version))\b[^\n]*\n(.*?)(?=^## |\z)")
           if (-not $m.Success -or -not $m.Groups[1].Value.Trim()) { throw "CHANGELOG.md has no '## $version' section." }
           New-Item -ItemType Directory -Force out | Out-Null
-          $notes = $m.Groups[1].Value.Trim() + "`n`nBifrost Recorder is free software under the GPL (see LICENSE and THIRD-PARTY-NOTICES.md). It runs OBS Studio's official, unmodified runtime; OBS Studio's matching source is attached to this release."
+          $notes = $m.Groups[1].Value.Trim() + "`n`nUSASOC Recorder is free software under the GPL (see LICENSE and THIRD-PARTY-NOTICES.md). It runs OBS Studio's official, unmodified runtime; OBS Studio's matching source is attached to this release."
           $notes | Set-Content -Encoding utf8 out/release-notes.md
           "version=$version" >> $env:GITHUB_OUTPUT
-          "Bifrost Recorder $version"
+          "USASOC Recorder $version"
 
       - name: Build
         shell: pwsh
@@ -99,11 +99,11 @@ jobs:
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             "Replaced the files on the existing $env:TAG release."
           } else {
-            gh release create $env:TAG @files --title "Bifrost Recorder $env:VERSION" --notes-file out/release-notes.md --verify-tag
+            gh release create $env:TAG @files --title "USASOC Recorder $env:VERSION" --notes-file out/release-notes.md --verify-tag
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
 
-      - name: Publish to the TFH Armory
+      - name: Publish to the USASOC Armory
         shell: pwsh
         env:
           TOKEN: ${{ secrets.ARMORY_RECORDER_PUBLISH_TOKEN }}
@@ -143,7 +143,7 @@ jobs:
             }
           } finally { $fs.Dispose() }
           $done = Invoke-RestMethod -Method Post -Uri "$api/$id/finish?app=recorder" -Headers $h -ContentType 'application/json' -Body (@{ version = $env:VERSION; sha256 = $sha } | ConvertTo-Json)
-          "Published Bifrost Recorder $($done.version): $($done.size) bytes, sha256 $($done.sha256)"
+          "Published USASOC Recorder $($done.version): $($done.size) bytes, sha256 $($done.sha256)"
 
       - name: Clean up past releases
         # Past releases lose their files; their notes and tags stay (to roll back, run this workflow on the old tag).

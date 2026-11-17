@@ -1,14 +1,14 @@
-# Bifrost Recorder: progress
+# USASOC Recorder: progress
 
 Native Windows exe (C# WinForms, C# 5, compiled with Windows' own `csc.exe`, no NuGet). Since 0.2.0 it records with libobs, the engine
-of OBS Studio (32.2.2's official release files, unmodified). Built like Bifrost Suite: `build.ps1`. Public on GitHub since 2026-10-18:
+of OBS Studio (32.2.2's official release files, unmodified). Built like USASOC Suite: `build.ps1`. Public on GitHub since 2026-10-18:
 TheRealCongo/Bifrost-Recorder, GPL-2.0-or-later.
 
 ## M2: the OBS engine (0.2.0, 2026-10-18)
 
 **Why.** Under Arma's GPU load any capture from outside the game competes with it for the GPU (M1b/M1c live tests). OBS and Medal record
 games smoothly because a hook copies each frame inside the game's own frame. Congo chose to open-source the Recorder so it can run OBS's
-engine and its signed hook under the Recorder's own window (Oct 18: "I'll open source the Bifrost Recorder and we can just use the OBS
+engine and its signed hook under the Recorder's own window (Oct 18: "I'll open source the USASOC Recorder and we can just use the OBS
 hooks"). BattlEye trusts OBS's hook by its signature, so the hook is used exactly as OBS ships it, never rebuilt or changed.
 
 **What changed.**
@@ -91,7 +91,7 @@ creating the missing 60 fps repeats (each one is encoder work too), so the encod
 3. **Switches** in `BifrostRecorder.settings.json` (not in the UI; the header chip shows the active set, e.g. `HEVC · NVENC · gentle · 1080p · GPU high`):
    `"EncoderProfile": "standard" | "gentle"`, `"MaxHeight": 0 | 720 | 1080` (any 144 to 8192; done by gfxcapture itself with `width=`/`height=` and
    `resize_mode=scale_aspect`, on the GPU), `"GpuPriority": "high" | "normal"`. Gentle = `-preset p4 -tune hq -rc vbr -cq 24 -b:v 0 -maxrate M -bufsize M -bf 0 -spatial-aq 0
-   -rc-lookahead 0 -multipass disabled -g 120`. A settings file without DataFolder still saves to `%USERPROFILE%\Videos\Bifrost Recorder`.
+   -rc-lookahead 0 -multipass disabled -g 120`. A settings file without DataFolder still saves to `%USERPROFILE%\Videos\USASOC Recorder`.
 4. **Studio-safe end**: Stop asks the window to repaint first (a closing frame), and if the encoder is behind (more than 1.5 s of video unwritten, or flagged behind) ffmpeg gets up
 
 ### M1c: two more switches to try in a live test (code and unit tests only; never run on the GPU)
@@ -131,16 +131,16 @@ idea was wrong); NVENC with spatial AQ 22 fps; without AQ 53 to 56 fps at any pr
 (2 to 3 fps). So the defaults are now: Light encoder (p4, no AQ, no B-frames, no lookahead, bufsize = ceiling), Native size, This window, Steady 60 fps, GPU priority **normal**, EncoderCheck vendor.
 Scaling (1080p, 720p) is documented in the Settings window as costly while a game runs; the older AQ set remains as "Quality, for desktop apps only".
 
-**Settings window and prefs (0.1.3).** Bifrost Suite rewrites `BifrostRecorder.settings.json` **whole** on every install and update (Bifrost-Hub src/Hub/Core.cs, `WriteSettingsFile`, for apps with a
+**Settings window and prefs (0.1.3).** USASOC Suite rewrites `BifrostRecorder.settings.json` **whole** on every install and update (Bifrost-Hub src/Hub/Core.cs, `WriteSettingsFile`, for apps with a
 SettingsFile and no KeyFile), so a choice kept there would vanish. The member's choices therefore live in `<DataFolder>\Recorder.prefs.json` (without a DataFolder: `%LOCALAPPDATA%\Bifrost Recorder\prefs.json`),
 written at once on every change; precedence is prefs, then the experiment keys in settings.json, then the defaults; a damaged prefs file is ignored with a status-line note. The five choices and the look (theme id
-and accent) are saved there. The look is a C# port of Bifrost Scribe's `src/shared/theme.ts`: the same five presets with the same token values, the same accent maths (HSV, hue 0 to 359, Studio's swatches,
+and accent) are saved there. The look is a C# port of USASOC Scribe's `src/shared/theme.ts`: the same five presets with the same token values, the same accent maths (HSV, hue 0 to 359, Studio's swatches,
 white and black), on-accent text by contrast; unit tests check the values against theme.ts's maths. Two additions of mine: the amber of "Falling behind" comes from Planner's presets (Scribe has no
 warning token), and the accent used as text or a thin line falls back to the text colour when it would not read (white accent on Paper). The default accent is now the preset's own (Console's amber), so the
 Recorder's UI no longer defaults to lime; the app icon is unchanged.
 
 **Findings to act on elsewhere.** (1) The Hub writes `BifrostRecorder.settings.json` with only `ManagedBy` and `DataFolder` (the recorder's catalog entry has SettingsFile, no KeyFile), so the Recorder never
-receives `TeamServer`/`TeamKey` from Bifrost Suite: the Upload to Armory button opens the website until the catalog entry is changed to a KeyFile (which merges, as for Planner). (2) Ctrl+Alt+R is already
+receives `TeamServer`/`TeamKey` from USASOC Suite: the Upload to Armory button opens the website until the catalog entry is changed to a KeyFile (which merges, as for Planner). (2) Ctrl+Alt+R is already
 registered by another program on this PC (Win32 error 1409), so the Recorder falls back to Ctrl+Alt+Shift+R when the default is taken and shows the key it actually registered.
    to 30 s to finish after `q` (10 s otherwise) before any kill; the window says `Finishing…  N s of video still to write`.
 ## Live test (M1): for Congo
@@ -151,7 +151,7 @@ registered by another program on this PC (Win32 error 1409), so the Recorder fal
 3. In the Recorder pick the game in the list (press Refresh if it isn't there), press **Record**. The clock runs and the line
    under it shows the file growing. Play 1 to 2 minutes, then Alt+Tab back and press **Stop** (the window can be anywhere, even
    behind the game).
-4. With no `BifrostRecorder.settings.json` beside the exe the video is saved to `%USERPROFILE%\Videos\Bifrost Recorder\<program> yyyy-MM-dd HH-mm-ss.mp4`
+4. With no `BifrostRecorder.settings.json` beside the exe the video is saved to `%USERPROFILE%\Videos\USASOC Recorder\<program> yyyy-MM-dd HH-mm-ss.mp4`
    ("Open recordings folder" opens it).
 5. What to check: the MP4 plays smoothly and the picture is the game's window only; colours look right; file size (a guide for
    Arma is in the measurements below once they're in: the cap is 30 Mb/s at 1080p, about 225 MB a minute at the very most);
@@ -168,7 +168,7 @@ Not in M1: sound (video only), hotkey, upload.
 ```
 REQUIREMENTS
 - Window list (visible, titled, not cloaked, not tool windows, not itself) with title + exe name + icon; Refresh; Record/Stop; elapsed; status; Open recordings folder.
-- Output: <DataFolder>\Recordings from BifrostRecorder.settings.json, else %USERPROFILE%\Videos\Bifrost Recorder; "<program> yyyy-MM-dd HH-mm-ss.mp4".
+- Output: <DataFolder>\Recordings from BifrostRecorder.settings.json, else %USERPROFILE%\Videos\USASOC Recorder; "<program> yyyy-MM-dd HH-mm-ss.mp4".
 - ffmpeg gfxcapture hwnd=, 60 fps constant, GPU frames into the encoder (hevc_nvenc > hevc_amf > hevc_qsv by test encode, cached), HEVC Main 8-bit,
   constant quality + ceiling scaled by pixels, 2 s keyframes, tagged; .mkv while recording, q to stop, remux to .mp4, ffprobe, delete .mkv.
 - Window closes: stop and save. No console windows, Job Object kill-on-close, nothing left behind.
